@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "gc.hpp"
 #include "objectstore.hpp"
 #include "packfile.hpp"

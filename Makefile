@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 BINARY=co
 DIST_DIR=dist
 VERSION?=$(shell git describe --tags --always --dirty)
