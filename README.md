@@ -8,9 +8,30 @@ This repository contains the MVP skeleton of a CLI tool called `co`. It stores G
 co init "./example doc.docx"
 co commit -m "Initial import" "./example doc.docx"
 co log "./example doc.docx"
+co status "./example doc.docx"
+co diff HEAD~1 HEAD "./example doc.docx"
 co gc "./example doc.docx"
 co checkout <commit> "./example doc.docx"
 ```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `init` | Initialize a `.co/` repository inside an Office file |
+| `commit -m <msg>` | Create a blob/tree/commit for every file in the archive |
+| `log` | Traverse the commit parent chain from `.co/HEAD` |
+| `status` | Report the version-control status of the Office file |
+| `diff <ref-a> <ref-b>` | Compare two commits and list changed files (A/D/M) |
+| `gc` | Pack reachable objects and prune unreachable ones |
+| `checkout <commit>` | Restore the Office file to the given commit |
+| `migrate` | Convert the repository's hash algorithm between SHA1 and SHA256 |
+| `export` | Extract `.co/` history into a standalone `.co-bundle` |
+| `import` | Inject a `.co-bundle`'s history back into an Office file |
+| `verify-bundle` | Verify the integrity of a `.co-bundle` |
+| `bundle-merge` | Three-way merge two `.co-bundle` files into a new bundle |
+
+Refs for `diff`: `HEAD`, `HEAD~N`, a full hash, or a hash prefix.
 
 ## Building
 
@@ -58,3 +79,22 @@ co init My\ File.docx
 - `log` traverses the commit parent chain starting from `.co/HEAD`.
 - `gc` packs reachable objects into `.co/objects/pack/pack-<timestamp>.pack`, removing loose objects and old packfiles to reduce file size.
 - Author identity is derived from `CO_AUTHOR_NAME` and `CO_AUTHOR_EMAIL` environment variables (with defaults if unset).
+
+## Hash Algorithm
+
+`co` stores objects under a content hash. The default is **SHA-1** for backward compatibility with existing repositories; **SHA-256** is available for stronger collision resistance.
+
+Pick the algorithm at build time:
+
+```bash
+# SHA-1 (default)
+cmake -B build -DVERSION=$(git describe --tags --always --dirty)
+
+# SHA-256
+cmake -B build -DCO_HASH=sha256 -DVERSION=$(git describe --tags --always --dirty)
+cmake --build build
+```
+
+Or with the Makefile: `make CO_HASH=sha256 build`.
+
+A single repository uses one algorithm. To switch an existing repository's algorithm, run `co migrate <path>` — it rewrites every object's hash. After migrating you **must rebuild the binary with the matching `-DCO_HASH=<target>`** to keep operating on that repository.

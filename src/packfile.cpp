@@ -66,7 +66,7 @@ bool writePackIndex(Document& doc, const PackIndex& index, const std::string& pa
     }
     for (uint32_t count : fanout) writeBE32(idxBuf, count);
 
-    // sha 数组（每个 20 字节）
+    // sha 数组（每个 kHashLen 字节）
     for (const auto& hash : index.hashes) {
         std::vector<uint8_t> b = hexDecode(hash);
         idxBuf.insert(idxBuf.end(), b.begin(), b.end());
@@ -78,8 +78,8 @@ bool writePackIndex(Document& doc, const PackIndex& index, const std::string& pa
     // offset 数组
     for (uint32_t offset : index.offsets) writeBE32(idxBuf, offset);
 
-    // 20 字节 SHA1 trailer
-    std::array<uint8_t,20> idxHash = sha1(idxBuf);
+    // kHashLen 字节摘要 trailer
+    std::vector<uint8_t> idxHash = hashDigest(idxBuf);
     idxBuf.insert(idxBuf.end(), idxHash.begin(), idxHash.end());
 
     std::string idxPath = std::string(kPackDir) + "/" + packName + ".idx";
@@ -139,8 +139,8 @@ bool writePack(Document& doc, const std::vector<PackedObject>& objects, const st
         index.crcs[i] = crc32IEEE(packBuf.data() + objStart, packBuf.size() - objStart);
     }
 
-    // 20 字节 SHA1 trailer
-    std::array<uint8_t,20> packHash = sha1(packBuf);
+    // kHashLen 字节摘要 trailer
+    std::vector<uint8_t> packHash = hashDigest(packBuf);
     packBuf.insert(packBuf.end(), packHash.begin(), packHash.end());
 
     // 写入 pack 文件
@@ -187,16 +187,18 @@ bool readPackIndex(const Document& doc, const std::string& packName, PackIndex& 
         return true;
     }
 
-    // 读 sha 数组（每个 20 字节）
-    if (pos + static_cast<size_t>(objCount) * 20 > data.size()) return false;
+    // 验证整个索引文件的最小预期大小，防止 objCount 带来的整数溢出与 OOM 漏洞
+    uint64_t expectedSize = 1032 + static_cast<uint64_t>(objCount) * (kHashLen + 8) + kHashLen;
+    if (expectedSize > data.size()) return false;
+
+    // 读 sha 数组（每个 kHashLen 字节）
     out.hashes.resize(objCount);
     for (uint32_t i = 0; i < objCount; ++i) {
-        out.hashes[i] = hexEncode(data.data() + pos, 20);
-        pos += 20;
+        out.hashes[i] = hexEncode(data.data() + pos, kHashLen);
+        pos += kHashLen;
     }
 
     // 读 crc 数组
-    if (pos + static_cast<size_t>(objCount) * 4 > data.size()) return false;
     out.crcs.resize(objCount);
     for (uint32_t i = 0; i < objCount; ++i) {
         out.crcs[i] = readBE32(data.data() + pos);
@@ -204,7 +206,6 @@ bool readPackIndex(const Document& doc, const std::string& packName, PackIndex& 
     }
 
     // 读 offset 数组
-    if (pos + static_cast<size_t>(objCount) * 4 > data.size()) return false;
     out.offsets.resize(objCount);
     for (uint32_t i = 0; i < objCount; ++i) {
         out.offsets[i] = readBE32(data.data() + pos);
@@ -249,6 +250,7 @@ bool readPackedObject(const Document& doc, const std::string& packName,
     uint32_t shift = 4;
     while ((c & 0x80) != 0) {
         if (pos >= data.size()) return false;
+        if (shift >= 60) return false; // 防止位移溢出未定义行为
         c = data[pos]; ++pos;
         size |= static_cast<uint64_t>(c & 0x7F) << shift;
         shift += 7;
