@@ -67,22 +67,38 @@ void Store::setHead(const std::string& hash) {
 
 // ============ writeObject ============
 
+// 构造对象 payload（header "type size\0" + content）并计算哈希
+static std::string computeObjectHash(const std::string& objType, const std::vector<uint8_t>& content) {
+    std::string header = objType + " " + std::to_string(content.size()) + '\0';
+    std::vector<uint8_t> payload;
+    payload.reserve(header.size() + content.size());
+    payload.insert(payload.end(), header.begin(), header.end());
+    payload.insert(payload.end(), content.begin(), content.end());
+    std::vector<uint8_t> hashBytes = hashDigest(payload);
+    return hexEncode(hashBytes);
+}
+
+std::string Store::hashObject(const std::string& objType, const std::vector<uint8_t>& content) const {
+    return computeObjectHash(objType, content);
+}
+
+std::string Store::writeBlob(const std::vector<uint8_t>& data) {
+    return writeObject("blob", data);
+}
+
 std::string Store::writeObject(const std::string& objType, const std::vector<uint8_t>& content) {
-    // 拼接 header: "type size\0"
+    std::string hash = computeObjectHash(objType, content);
+
+    // 去重：相同内容产生相同 hash，已存在则直接返回（第七章）
+    if (hasObject(hash)) return hash;
+
+    // 拼接 payload 并 zlib 压缩
     std::string header = objType + " " + std::to_string(content.size()) + '\0';
     std::vector<uint8_t> payload;
     payload.reserve(header.size() + content.size());
     payload.insert(payload.end(), header.begin(), header.end());
     payload.insert(payload.end(), content.begin(), content.end());
 
-    // SHA1 取哈希
-    std::array<uint8_t,20> hashBytes = sha1(payload);
-    std::string hash = hexEncode(hashBytes);
-
-    // 去重
-    if (hasObject(hash)) return hash;
-
-    // zlib 压缩
     std::vector<uint8_t> compressed = compressZlib(payload);
     doc_.set(objectPath(hash), compressed);
     return hash;
@@ -162,6 +178,8 @@ std::vector<std::string> Store::listLooseObjects() const {
         // 排除 pack 目录下的条目
         if (name.size() >= packPrefix.size() &&
             name.compare(0, packPrefix.size(), packPrefix) == 0) continue;
+        // 跳过目录条目（以 '/' 结尾，如 ".co/objects/xx/"）——它们不是对象
+        if (!name.empty() && name.back() == '/') continue;
 
         // 去掉前缀后按 '/' 分割
         std::string rest = name.substr(prefix.size());
@@ -177,12 +195,18 @@ std::vector<std::string> Store::listLooseObjects() const {
             start = slashPos + 1;
         }
 
-        // len(parts)==2 且 len(parts[0])==2 时拼成 hash
-        if (parts.size() == 2 && parts[0].size() == 2) {
+        // len(parts)==2 且 len(parts[0])==2 且 parts[1] 非空时拼成 hash
+        if (parts.size() == 2 && parts[0].size() == 2 && !parts[1].empty()) {
             objects.push_back(parts[0] + parts[1]);
         }
     }
     return objects;
+}
+
+// ============ listPacks ============
+
+std::vector<std::string> Store::listPacks() const {
+    return listPackFiles(doc_);
 }
 
 } // namespace co

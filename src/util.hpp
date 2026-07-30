@@ -8,14 +8,34 @@
 
 namespace co {
 
-// SHA1 — 使用 OpenSSL
+// 哈希长度（编译期由 CO_HASH 决定）。SHA1=20，SHA256=32。
+// 旧仓库默认 SHA1（向后兼容）；用 -DCO_HASH=sha256 构建可启用 SHA256。
+#ifdef CO_HASH_SHA256
+inline constexpr size_t kHashLen = 32;
+#else
+inline constexpr size_t kHashLen = 20;
+#endif
+
+// SHA1 — 使用 OpenSSL（始终编译，供 migrate 跨算法转换使用）
 std::array<uint8_t,20> sha1(const uint8_t* data, size_t len);
 std::array<uint8_t,20> sha1(const std::vector<uint8_t>& data);
+
+// SHA256 — 使用 OpenSSL（始终编译，供 migrate 跨算法转换使用）
+std::array<uint8_t,32> sha256(const uint8_t* data, size_t len);
+std::array<uint8_t,32> sha256(const std::vector<uint8_t>& data);
+
+// 当前构建默认摘要（kHashLen 字节）。SHA1 构建返回 SHA1，SHA256 构建返回 SHA256。
+std::vector<uint8_t> hashDigest(const uint8_t* data, size_t len);
+std::vector<uint8_t> hashDigest(const std::vector<uint8_t>& data);
+
+// 按指定算法计算摘要（供 migrate 显式指定目标算法）。len 必须为 20 或 32。
+std::vector<uint8_t> hashDigestByLen(const uint8_t* data, size_t len, size_t hashLen);
 
 // Hex 编解码
 std::string hexEncode(const uint8_t* data, size_t len);
 std::string hexEncode(const std::vector<uint8_t>& data);
 std::string hexEncode(const std::array<uint8_t,20>& data);
+std::string hexEncode(const std::array<uint8_t,32>& data);
 std::vector<uint8_t> hexDecode(const std::string& s);
 
 // Zlib 压缩/解压（用 zlib 库，行为对齐 Go compress/zlib）

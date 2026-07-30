@@ -63,7 +63,7 @@ bool markReachableCommit(const Store& store, const std::vector<uint8_t>& content
 }
 
 // 标记 tree 对象引用的所有 blob
-// 按 null 字节 + 20 字节二进制哈希遍历
+// 按 null 字节 + kHashLen 字节二进制哈希遍历
 bool markReachableTree(const Store& store, const std::vector<uint8_t>& content,
                        std::set<std::string>& reachable) {
     size_t pos = 0;
@@ -72,11 +72,11 @@ bool markReachableTree(const Store& store, const std::vector<uint8_t>& content,
         size_t nullIdx = pos;
         while (nullIdx < content.size() && content[nullIdx] != 0) ++nullIdx;
         if (nullIdx >= content.size()) break;
-        if (nullIdx + 21 > content.size()) break;
-        // 哈希在 nullIdx+1 .. nullIdx+21
-        std::string hash = hexEncode(content.data() + nullIdx + 1, 20);
+        if (nullIdx + 1 + kHashLen > content.size()) break;
+        // 哈希在 nullIdx+1 .. nullIdx+1+kHashLen
+        std::string hash = hexEncode(content.data() + nullIdx + 1, kHashLen);
         if (!markReachable(store, hash, reachable)) return false;
-        pos = nullIdx + 21;
+        pos = nullIdx + 1 + kHashLen;
     }
     return true;
 }

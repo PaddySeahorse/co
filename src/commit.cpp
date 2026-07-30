@@ -2,6 +2,7 @@
 
 #include "commit.hpp"
 #include "objectstore.hpp"
+#include "index.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -170,13 +172,14 @@ std::string envOrDefault(const char* key, const char* def) {
     return s;
 }
 
-// 判断是否为 .co 条目
+} // namespace
+
+// ============ isCoEntry（公开） ============
+
 bool isCoEntry(const std::string& name) {
     return name == ".co" || name == ".co/" ||
            (name.size() >= 4 && name.compare(0, 4, ".co/") == 0);
 }
-
-} // namespace
 
 // ============ formatTimestampRFC1123Z ============
 
@@ -240,7 +243,7 @@ Commit parseCommit(const std::string& hash, const std::vector<uint8_t>& content)
         if (key == "tree") {
             commit.tree = val;
         } else if (key == "parent") {
-            commit.parent = val;
+            commit.parents.push_back(val);
         } else if (key == "author") {
             ParsedAuthor pa = parseAuthor(val);
             commit.authorName = pa.name;
@@ -249,6 +252,8 @@ Commit parseCommit(const std::string& hash, const std::vector<uint8_t>& content)
         }
     }
 
+    // 兼容字段：首父
+    commit.parent = commit.parents.empty() ? std::string() : commit.parents[0];
     return commit;
 }
 
@@ -272,59 +277,137 @@ std::vector<TreeEntry> parseTree(const std::vector<uint8_t>& content) {
         }
         std::string path(content.begin() + space + 1, content.begin() + nullIdx);
         size_t hashStart = nullIdx + 1;
-        size_t hashEnd = hashStart + 20;
+        size_t hashEnd = hashStart + kHashLen;
         if (hashEnd > content.size()) {
             throw std::runtime_error("invalid tree entry: short hash");
         }
-        std::string hash = hexEncode(content.data() + hashStart, 20);
+        std::string hash = hexEncode(content.data() + hashStart, kHashLen);
         entries.push_back(TreeEntry{path, hash});
         pos = hashEnd;
     }
     return entries;
 }
 
-// ============ createCommit ============
+// ============ 读取辅助 ============
 
-std::string createCommit(Document& doc, const std::string& message, int64_t nowUnix) {
-    Store store(doc);
+std::optional<Commit> readCommit(const Document& doc, const std::string& hash) {
+    Store store(const_cast<Document&>(doc));
+    auto obj = store.readObject(hash);
+    if (!obj || obj->first != "commit") return std::nullopt;
+    return parseCommit(hash, obj->second);
+}
 
-    // 1. 遍历非 .co 条目写 blob
-    std::map<std::string, std::string> blobMap;
-    for (const auto& name : doc.list()) {
-        if (name.rfind(".co/", 0) == 0) continue;          // .co/ 前缀
-        if (!name.empty() && name.back() == '/') continue;  // 目录条目
-
-        std::vector<uint8_t> data;
-        doc.get(name, data);  // 忽略失败（对齐 Go：失败时 data 为空）
-        std::string blobHash = store.writeObject("blob", data);
-        blobMap[name] = blobHash;
+std::vector<TreeEntry> readTree(const Document& doc, const std::string& hash) {
+    Store store(const_cast<Document&>(doc));
+    auto obj = store.readObject(hash);
+    if (!obj || obj->first != "tree") return {};
+    try {
+        return parseTree(obj->second);
+    } catch (...) {
+        return {};
     }
+}
 
-    // 2. 按字母排序路径构建 tree
-    std::vector<std::string> paths;
-    paths.reserve(blobMap.size());
-    for (const auto& kv : blobMap) paths.push_back(kv.first);
-    std::sort(paths.begin(), paths.end());
+// ============ tree 构建辅助 ============
 
+// 把 entries 按字母序序列化为 tree 对象内容
+static std::vector<uint8_t> serializeTree(const std::vector<TreeEntry>& entries) {
+    std::vector<TreeEntry> sorted = entries;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const TreeEntry& a, const TreeEntry& b) { return a.path < b.path; });
     std::vector<uint8_t> treeContent;
-    for (const auto& path : paths) {
-        std::string entry = "100644 " + path;
+    for (const auto& e : sorted) {
+        std::string entry = "100644 " + e.path;
         treeContent.insert(treeContent.end(), entry.begin(), entry.end());
-        treeContent.push_back(0);  // null 分隔
-        std::vector<uint8_t> binaryHash = hexDecode(blobMap[path]);
+        treeContent.push_back(0);
+        std::vector<uint8_t> binaryHash = hexDecode(e.hash);
         treeContent.insert(treeContent.end(), binaryHash.begin(), binaryHash.end());
     }
+    return treeContent;
+}
 
-    std::string treeHash = store.writeObject("tree", treeContent);
+std::string buildTreeHash(Store& store, const std::vector<TreeEntry>& entries) {
+    std::vector<uint8_t> treeContent = serializeTree(entries);
+    return store.hashObject("tree", treeContent);
+}
 
-    // 3. 构建作者信息
+std::string writeTree(Store& store, const std::vector<TreeEntry>& entries) {
+    std::vector<uint8_t> treeContent = serializeTree(entries);
+    return store.writeObject("tree", treeContent);
+}
+
+// ============ createCommitExternal ============
+
+std::string createCommitExternal(Document& historyDoc, const Document& contentDoc,
+                                 const std::string& message, int64_t nowUnix) {
+    Store store(historyDoc);
+
+    // 加载增量索引（第九章）：缺失/损坏则全量
+    CommitIndex idx = loadIndex(historyDoc);
+
+    // 1. 遍历 contentDoc 非 .co 文件条目，写 blob（带增量去重）
+    std::map<std::string, std::string> blobMap;
+    CommitIndex newIndex;
+    newIndex.valid = true;
+
+    for (const auto& name : contentDoc.list()) {
+        if (isCoEntry(name)) continue;
+        if (!name.empty() && name.back() == '/') continue;  // 目录条目
+
+        const ZipEntry* entry = contentDoc.getEntry(name);
+        // 指纹：优先用 ZIP 中央目录已有的 size+CRC（免读数据）
+        bool haveStat = entry && (entry->crc != 0 || entry->uncompressedSize != 0);
+        uint64_t fpSize = 0;
+        uint32_t fpCrc = 0;
+        std::vector<uint8_t> data;  // 惰性读取
+
+        if (haveStat) {
+            fpSize = entry->uncompressedSize;
+            fpCrc = entry->crc;
+        } else {
+            contentDoc.get(name, data);
+            fpSize = data.size();
+            fpCrc = crc32IEEE(data);
+        }
+
+        // 增量命中：指纹相同 + 索引有 blob hash + 对象仍存在 → 复用
+        std::string blobHash;
+        bool reused = false;
+        if (idx.valid) {
+            const IndexEntry* ie = findEntry(idx, name);
+            if (ie && ie->size == fpSize && ie->crc == fpCrc &&
+                !ie->blobHash.empty() && store.hasObject(ie->blobHash)) {
+                blobHash = ie->blobHash;
+                reused = true;
+            }
+        }
+        if (!reused) {
+            if (data.empty()) contentDoc.get(name, data);
+            blobHash = store.writeBlob(data);  // 内部再次对象级去重（第七章）
+        }
+        blobMap[name] = blobHash;
+
+        IndexEntry ne;
+        ne.path = name;
+        ne.size = fpSize;
+        ne.crc = fpCrc;
+        ne.blobHash = blobHash;
+        newIndex.entries.push_back(std::move(ne));
+    }
+
+    // 2. 构建 tree
+    std::vector<TreeEntry> treeEntries;
+    for (const auto& kv : blobMap) treeEntries.push_back({kv.first, kv.second});
+    std::string treeHash = writeTree(store, treeEntries);
+
+    // 3. 作者信息
     std::string parent = store.head();
     std::string name = envOrDefault("CO_AUTHOR_NAME", "");
-    if (name.empty()) name = authorFromMetadata(doc);
+    if (name.empty()) name = authorFromMetadata(contentDoc);
     if (name.empty()) name = "Unknown";
     std::string email = envOrDefault("CO_AUTHOR_EMAIL", "unknown@example.com");
 
-    // 4. 构建 commit 内容
+    // 4. 构建 commit
     std::string commitContent;
     commitContent += "tree " + treeHash + "\n";
     if (!parent.empty()) {
@@ -340,6 +423,43 @@ std::string createCommit(Document& doc, const std::string& message, int64_t nowU
     std::vector<uint8_t> commitData(commitContent.begin(), commitContent.end());
     std::string commitHash = store.writeObject("commit", commitData);
     store.setHead(commitHash);
+
+    // 5. 写回增量索引
+    saveIndex(historyDoc, newIndex);
+    return commitHash;
+}
+
+std::string createCommit(Document& doc, const std::string& message, int64_t nowUnix) {
+    return createCommitExternal(doc, doc, message, nowUnix);
+}
+
+// ============ createMergeCommit ============
+
+std::string createMergeCommit(Document& historyDoc, const std::string& treeHash,
+                              const std::vector<std::string>& parents,
+                              const std::string& message, int64_t nowUnix) {
+    Store store(historyDoc);
+    std::string name = envOrDefault("CO_AUTHOR_NAME", "Merge");
+    if (name.empty()) name = "Merge";
+    std::string email = envOrDefault("CO_AUTHOR_EMAIL", "unknown@example.com");
+
+    std::string commitContent;
+    commitContent += "tree " + treeHash + "\n";
+    for (const auto& p : parents) {
+        if (!p.empty()) commitContent += "parent " + p + "\n";
+    }
+    commitContent += "author " + name + " <" + email + "> " +
+                     std::to_string(nowUnix) + " +0000\n";
+    commitContent += "committer " + name + " <" + email + "> " +
+                     std::to_string(nowUnix) + " +0000\n\n";
+    commitContent += message;
+    commitContent += "\n";
+
+    std::vector<uint8_t> commitData(commitContent.begin(), commitContent.end());
+    std::string commitHash = store.writeObject("commit", commitData);
+    store.setHead(commitHash);
+    // merge 后索引失效，删除以走全量
+    removeIndex(historyDoc);
     return commitHash;
 }
 
@@ -363,47 +483,62 @@ std::vector<Commit> logCommits(const Document& doc) {
     return commits;
 }
 
-// ============ checkoutCommit ============
+// ============ checkoutCommitExternal ============
 
-bool checkoutCommit(Document& doc, const std::string& commitHash) {
+bool checkoutCommitExternal(Document& historyDoc, Document& contentDoc,
+                            const std::string& commitHash) {
     try {
-        Store store(doc);
+        Store store(historyDoc);
 
-        // 读 commit 对象
-        auto obj = store.readObject(commitHash);
-        if (!obj) return false;
-        if (obj->first != "commit") return false;
+        auto commit = readCommit(historyDoc, commitHash);
+        if (!commit || commit->tree.empty()) return false;
 
-        Commit parsed = parseCommit(commitHash, obj->second);
-        if (parsed.tree.empty()) return false;
-
-        // 读 tree 对象
-        auto treeObj = store.readObject(parsed.tree);
-        if (!treeObj) return false;
-        if (treeObj->first != "tree") return false;
-
-        std::vector<TreeEntry> entries = parseTree(treeObj->second);
-
-        // 删除非 .co 条目
-        auto names = doc.list();  // 拷贝，避免迭代时修改
-        for (const auto& name : names) {
-            if (isCoEntry(name)) continue;
-            doc.remove(name);
+        std::vector<TreeEntry> entries = readTree(historyDoc, commit->tree);
+        if (entries.empty()) {
+            // 区分「合法空树」与「tree 对象缺失/损坏」：后者必须失败以免清空内容。
+            auto treeObj = store.readObject(commit->tree);
+            if (!treeObj || treeObj->first != "tree") return false;
         }
 
-        // 按 tree 恢复 blob
+        // 删除 contentDoc 非 .co 条目
+        auto names = contentDoc.list();  // 拷贝，避免迭代时修改
+        for (const auto& name : names) {
+            if (isCoEntry(name)) continue;
+            contentDoc.remove(name);
+        }
+
+        // 按 tree 恢复 blob 到 contentDoc，同时重建增量索引
+        CommitIndex newIndex;
+        newIndex.valid = true;
         for (const auto& entry : entries) {
             auto blob = store.readObject(entry.hash);
             if (!blob) return false;
             if (blob->first != "blob") return false;
-            doc.set(entry.path, blob->second);
+            contentDoc.set(entry.path, blob->second);
+            // 写入 CRC/size 供下次 commit 增量命中（免读数据）
+            ZipEntry* ze = contentDoc.getEntryMut(entry.path);
+            if (ze) {
+                ze->crc = crc32IEEE(blob->second);
+                ze->uncompressedSize = blob->second.size();
+            }
+            IndexEntry ne;
+            ne.path = entry.path;
+            ne.size = blob->second.size();
+            ne.crc = crc32IEEE(blob->second);
+            ne.blobHash = entry.hash;
+            newIndex.entries.push_back(std::move(ne));
         }
 
         store.setHead(commitHash);
+        saveIndex(historyDoc, newIndex);
         return true;
     } catch (...) {
         return false;
     }
+}
+
+bool checkoutCommit(Document& doc, const std::string& commitHash) {
+    return checkoutCommitExternal(doc, doc, commitHash);
 }
 
 } // namespace co

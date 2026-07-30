@@ -26,6 +26,40 @@ std::array<uint8_t,20> sha1(const std::vector<uint8_t>& data) {
     return sha1(data.data(), data.size());
 }
 
+// ============ SHA256 ============
+
+std::array<uint8_t,32> sha256(const uint8_t* data, size_t len) {
+    std::array<uint8_t,32> out{};
+    unsigned int outLen = 0;
+    if (EVP_Digest(data, len, out.data(), &outLen, EVP_sha256(), nullptr) != 1) {
+        throw std::runtime_error("EVP_Digest(SHA256) failed");
+    }
+    return out;
+}
+
+std::array<uint8_t,32> sha256(const std::vector<uint8_t>& data) {
+    return sha256(data.data(), data.size());
+}
+
+// ============ 默认摘要 + 按长度摘要 ============
+
+std::vector<uint8_t> hashDigestByLen(const uint8_t* data, size_t len, size_t hashLen) {
+    if (hashLen == 32) {
+        auto h = sha256(data, len);
+        return std::vector<uint8_t>(h.begin(), h.end());
+    }
+    auto h = sha1(data, len);
+    return std::vector<uint8_t>(h.begin(), h.end());
+}
+
+std::vector<uint8_t> hashDigest(const uint8_t* data, size_t len) {
+    return hashDigestByLen(data, len, kHashLen);
+}
+
+std::vector<uint8_t> hashDigest(const std::vector<uint8_t>& data) {
+    return hashDigest(data.data(), data.size());
+}
+
 // ============ Hex ============
 
 std::string hexEncode(const uint8_t* data, size_t len) {
@@ -44,6 +78,10 @@ std::string hexEncode(const std::vector<uint8_t>& data) {
 }
 
 std::string hexEncode(const std::array<uint8_t,20>& data) {
+    return hexEncode(data.data(), data.size());
+}
+
+std::string hexEncode(const std::array<uint8_t,32>& data) {
     return hexEncode(data.data(), data.size());
 }
 
