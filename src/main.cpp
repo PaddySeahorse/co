@@ -393,9 +393,9 @@ static void handleInit(const std::vector<std::string>& args) {
     std::string path = pa.positional[0];
     requireOfficeFile(path);
 
+    FileLock lock = acquireLockOrDie(path);
     auto doc = Document::load(path);
     if (!doc) fatal("failed to load " + path);
-    FileLock lock = acquireLockOrDie(path);
     Store store(*doc);
     if (store.head() == "") store.setHead("");
     if (!doc->write(path)) fatal("failed to write " + path);
@@ -418,9 +418,9 @@ static void handleCommit(const std::vector<std::string>& args) {
 
     if (pa.external.empty()) {
         // 内嵌模式
+        FileLock lock = acquireLockOrDie(path);
         auto doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
-        FileLock lock = acquireLockOrDie(path);
         std::string hash = createCommit(*doc, pa.message, nowUnix);
         if (!doc->write(path)) fatal("failed to write " + path);
         printf("Committed %s\n", hash.c_str());
@@ -486,9 +486,9 @@ static void handleGC(const std::vector<std::string>& args) {
     requireOfficeFile(path);
 
     if (pa.external.empty()) {
+        FileLock lock = acquireLockOrDie(path);
         auto doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
-        FileLock lock = acquireLockOrDie(path);
         GCStats stats;
         if (!garbageCollect(*doc, stats)) fatal("garbage collection failed");
         if (!doc->write(path)) fatal("failed to write " + path);
@@ -527,9 +527,9 @@ static void handleCheckout(const std::vector<std::string>& args) {
     requireOfficeFile(path);
 
     if (pa.external.empty()) {
+        FileLock lock = acquireLockOrDie(path);
         auto doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
-        FileLock lock = acquireLockOrDie(path);
         if (!checkoutCommit(*doc, commitHash)) fatal("checkout failed: " + commitHash);
         if (!doc->write(path)) fatal("failed to write " + path);
         printf("Checked out %s\n", commitHash.c_str());

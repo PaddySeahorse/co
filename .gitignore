@@ -7,3 +7,7 @@ co
 *.test
 .DS_Store
 .trae
+
+# 临时测试产物，不提交
+test_bugs
+test_bugs.cpp

@@ -422,7 +422,11 @@ VerifyReport verifyBundle(const std::string& bundlePath) {
             if (i + 1 < idx.hashes.size()) {
                 end = idx.offsets[i + 1];
             } else {
-                end = packData.size() - trailer;
+                if (packData.size() >= trailer) {
+                    end = packData.size() - trailer;
+                } else {
+                    rep.packsIntact = false; break;
+                }
             }
             if (off >= packData.size() || end > packData.size() || end <= off) {
                 rep.packsIntact = false; break;

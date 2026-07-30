@@ -3,6 +3,7 @@
 #include "gc.hpp"
 #include "objectstore.hpp"
 #include "packfile.hpp"
+#include "commit.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -63,20 +64,15 @@ bool markReachableCommit(const Store& store, const std::vector<uint8_t>& content
 }
 
 // 标记 tree 对象引用的所有 blob
-// 按 null 字节 + kHashLen 字节二进制哈希遍历
 bool markReachableTree(const Store& store, const std::vector<uint8_t>& content,
                        std::set<std::string>& reachable) {
-    size_t pos = 0;
-    while (pos < content.size()) {
-        // 找 null 字节
-        size_t nullIdx = pos;
-        while (nullIdx < content.size() && content[nullIdx] != 0) ++nullIdx;
-        if (nullIdx >= content.size()) break;
-        if (nullIdx + 1 + kHashLen > content.size()) break;
-        // 哈希在 nullIdx+1 .. nullIdx+1+kHashLen
-        std::string hash = hexEncode(content.data() + nullIdx + 1, kHashLen);
-        if (!markReachable(store, hash, reachable)) return false;
-        pos = nullIdx + 1 + kHashLen;
+    try {
+        std::vector<TreeEntry> entries = parseTree(content);
+        for (const auto& e : entries) {
+            if (!markReachable(store, e.hash, reachable)) return false;
+        }
+    } catch (...) {
+        return false;
     }
     return true;
 }

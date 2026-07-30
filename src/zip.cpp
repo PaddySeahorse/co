@@ -241,20 +241,22 @@ std::unique_ptr<Document> Document::load(const std::string& path) {
         uint16_t commentLen     = readLE16(base + p + 32);
         uint32_t localOffset    = readLE32(base + p + 42);
 
+        size_t remaining = buf.size() - p - CDH_FIXED_SIZE;
+        if (static_cast<size_t>(nameLen) + extraLen + commentLen > remaining) return nullptr;
         size_t entryEnd = p + CDH_FIXED_SIZE + nameLen + extraLen + commentLen;
-        if (entryEnd > buf.size()) return nullptr;
 
         std::string name(reinterpret_cast<const char*>(base + p + CDH_FIXED_SIZE), nameLen);
 
         // 读取本地文件头，获取本地 extra field 与数据区起点
-        if (static_cast<size_t>(localOffset) + LFH_FIXED_SIZE > buf.size()) return nullptr;
+        if (localOffset > buf.size() || buf.size() - localOffset < LFH_FIXED_SIZE) return nullptr;
         if (readLE32(base + localOffset) != SIG_LOCAL_HEADER) return nullptr;
         uint16_t localNameLen  = readLE16(base + localOffset + 26);
         uint16_t localExtraLen = readLE16(base + localOffset + 28);
 
-        size_t dataStart = static_cast<size_t>(localOffset) + LFH_FIXED_SIZE
-                           + localNameLen + localExtraLen;
-        if (dataStart + compSize > buf.size()) return nullptr;
+        size_t remainingLocal = buf.size() - localOffset - LFH_FIXED_SIZE;
+        if (static_cast<size_t>(localNameLen) + localExtraLen > remainingLocal) return nullptr;
+        size_t dataStart = static_cast<size_t>(localOffset) + LFH_FIXED_SIZE + localNameLen + localExtraLen;
+        if (compSize > buf.size() - dataStart) return nullptr;
 
         // 本地 extra field（保留，写入本地头与中央目录均使用它）
         std::vector<uint8_t> localExtra;
@@ -282,7 +284,7 @@ std::unique_ptr<Document> Document::load(const std::string& path) {
         // 真实值在压缩数据之后的描述符中。保留描述符字节以实现字节级保留。
         if ((flags & 0x0008) != 0) {
             size_t ddStart = dataStart + compSize;
-            size_t ddLen = 12;  // 默认: crc(4) + comp(4) + uncomp(4)
+            size_t ddLen = 0;
             // 描述符可能带签名 0x08074b50（共 16 字节）。用 comp/uncomp 校验确认长度。
             if (ddStart + 16 <= buf.size() &&
                 readLE32(base + ddStart) == 0x08074b50 &&
@@ -294,7 +296,7 @@ std::unique_ptr<Document> Document::load(const std::string& path) {
                        readLE32(base + ddStart + 8) == uncompSize) {
                 ddLen = 12;
             }
-            if (ddStart + ddLen <= buf.size()) {
+            if (ddLen > 0 && ddStart + ddLen <= buf.size()) {
                 compData.insert(compData.end(), base + ddStart, base + ddStart + ddLen);
             }
         }
