@@ -237,6 +237,20 @@ static void requireExistingFile(const std::string& path) {
     }
 }
 
+// 校验：仓库实际哈希算法必须与当前二进制构建的算法一致；不一致则 fatal。
+// 空 history 或无法识别时不阻塞（init 和 migrate 显式不调用此函数）。
+static void requireHashCompat(const Document& doc) {
+    std::string repo = repoHashAlgoName(doc);
+    if (repo.empty()) return;
+    std::string builtin = currentHashAlgoName();
+    if (repo != builtin) {
+        fatal("repository hash algorithm is \"" + repo +
+              "\" but this binary was built for \"" + builtin +
+              "\". Rebuild with -DCO_HASH=" + repo +
+              " or run `co migrate` after rebuilding to switch the repository.");
+    }
+}
+
 // ============ flag 解析（Go 风格：flag 必须在 positional 之前） ============
 
 struct FlagSpec {
@@ -422,6 +436,7 @@ static void handleCommit(const std::vector<std::string>& args) {
         FileLock lock = acquireLockOrDie(path);
         auto doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
+        requireHashCompat(*doc);
         std::string hash = createCommit(*doc, pa.message, nowUnix);
         if (!doc->write(path)) fatal("failed to write " + path);
         printf("Committed %s\n", hash.c_str());
@@ -431,6 +446,7 @@ static void handleCommit(const std::vector<std::string>& args) {
         FileLock lock = acquireLockOrDie(pa.external);
         auto historyDoc = Document::load(pa.external);
         if (!historyDoc) fatal("failed to load bundle: " + pa.external);
+        requireHashCompat(*historyDoc);
         auto contentDoc = Document::load(path);
         if (!contentDoc) fatal("failed to load " + path);
         std::string hash = createCommitExternal(*historyDoc, *contentDoc, pa.message, nowUnix);
@@ -455,10 +471,12 @@ static void handleLog(const std::vector<std::string>& args) {
     if (pa.external.empty()) {
         doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
+        requireHashCompat(*doc);
     } else {
         requireExistingFile(pa.external);
         doc = Document::load(pa.external);
         if (!doc) fatal("failed to load bundle: " + pa.external);
+        requireHashCompat(*doc);
     }
     std::vector<Commit> commits = logCommits(*doc);
     for (const auto& entry : commits) {
@@ -490,6 +508,7 @@ static void handleGC(const std::vector<std::string>& args) {
         FileLock lock = acquireLockOrDie(path);
         auto doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
+        requireHashCompat(*doc);
         GCStats stats;
         if (!garbageCollect(*doc, stats)) fatal("garbage collection failed");
         if (!doc->write(path)) fatal("failed to write " + path);
@@ -503,6 +522,7 @@ static void handleGC(const std::vector<std::string>& args) {
         FileLock lock = acquireLockOrDie(pa.external);
         auto historyDoc = Document::load(pa.external);
         if (!historyDoc) fatal("failed to load bundle: " + pa.external);
+        requireHashCompat(*historyDoc);
         GCStats stats;
         if (!garbageCollect(*historyDoc, stats)) fatal("garbage collection failed");
         if (!writeBundleWithManifest(*historyDoc, pa.external)) {
@@ -523,7 +543,7 @@ static void handleCheckout(const std::vector<std::string>& args) {
     if (pa.showHelp) { printCheckoutUsage(stdout); return; }
     if (pa.positional.size() < 2) fatal("commit hash and Office file path are required.");
     if (pa.positional.size() > 2) fatal("unexpected arguments after path");
-    const std::string& commitHash = pa.positional[0];
+    const std::string& commitRef = pa.positional[0];
     const std::string& path = pa.positional[1];
     requireOfficeFile(path);
 
@@ -531,6 +551,9 @@ static void handleCheckout(const std::vector<std::string>& args) {
         FileLock lock = acquireLockOrDie(path);
         auto doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
+        requireHashCompat(*doc);
+        std::string commitHash = resolveRef(*doc, commitRef);
+        if (commitHash.empty()) fatal("checkout failed: " + commitRef);
         if (!checkoutCommit(*doc, commitHash)) fatal("checkout failed: " + commitHash);
         if (!doc->write(path)) fatal("failed to write " + path);
         printf("Checked out %s\n", commitHash.c_str());
@@ -540,8 +563,11 @@ static void handleCheckout(const std::vector<std::string>& args) {
         FileLock contentLock = acquireLockOrDie(path);
         auto historyDoc = Document::load(pa.external);
         if (!historyDoc) fatal("failed to load bundle: " + pa.external);
+        requireHashCompat(*historyDoc);
         auto contentDoc = Document::load(path);
         if (!contentDoc) fatal("failed to load " + path);
+        std::string commitHash = resolveRef(*historyDoc, commitRef);
+        if (commitHash.empty()) fatal("checkout failed: " + commitRef);
         if (!checkoutCommitExternal(*historyDoc, *contentDoc, commitHash)) {
             fatal("checkout failed: " + commitHash);
         }
@@ -569,11 +595,13 @@ static void handleStatus(const std::vector<std::string>& args) {
     if (pa.external.empty()) {
         auto doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
+        requireHashCompat(*doc);
         info = computeStatus(*doc, *doc, path);
     } else {
         requireExistingFile(pa.external);
         auto historyDoc = Document::load(pa.external);
         if (!historyDoc) fatal("failed to load bundle: " + pa.external);
+        requireHashCompat(*historyDoc);
         auto contentDoc = Document::load(path);
         if (!contentDoc) fatal("failed to load " + path);
         info = computeStatus(*historyDoc, *contentDoc, path);
@@ -606,10 +634,12 @@ static void handleDiff(const std::vector<std::string>& args) {
     if (pa.external.empty()) {
         doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
+        requireHashCompat(*doc);
     } else {
         requireExistingFile(pa.external);
         doc = Document::load(pa.external);
         if (!doc) fatal("failed to load bundle: " + pa.external);
+        requireHashCompat(*doc);
     }
     std::vector<DiffEntry> entries = diffCommits(*doc, refA, refB);
     if (entries.empty()) {

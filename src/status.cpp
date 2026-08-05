@@ -63,7 +63,11 @@ StatusInfo computeStatus(const Document& historyDoc, const Document& contentDoc,
                          const std::string& filePath) {
     StatusInfo info;
     info.fileSize = fileSizeOf(filePath);
-    info.hashAlgo = currentHashAlgoName();
+    info.hashAlgo = repoHashAlgoName(historyDoc);
+    if (info.hashAlgo.empty()) {
+        // 仓库尚未提交（empty HEAD）或无法识别：回退到当前构建默认。
+        info.hashAlgo = currentHashAlgoName();
+    }
 
     Store store(const_cast<Document&>(historyDoc));
     std::string head = store.head();
