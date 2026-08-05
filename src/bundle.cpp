@@ -31,6 +31,23 @@ std::string currentHashAlgoName() {
 #endif
 }
 
+std::string repoHashAlgoName(const Document& doc) {
+    // 优先：bundle 文件中 manifest.json 的 hash_algo 字段
+    std::vector<uint8_t> md;
+    if (doc.get(kManifestPath, md)) {
+        Manifest m;
+        std::string s(md.begin(), md.end());
+        if (parseManifest(s, m) && !m.hashAlgo.empty()) return m.hashAlgo;
+    }
+    // 兜底：根据 HEAD hex 长度推断（嵌入式仓库无 manifest.json）
+    Store store(const_cast<Document&>(doc));
+    std::string h = store.head();
+    if (h.empty()) return "";
+    if (h.size() == 2 * 20) return "sha1";
+    if (h.size() == 2 * 32) return "sha256";
+    return "";
+}
+
 int64_t fileSizeOf(const std::string& path) {
     struct stat st;
     if (stat(path.c_str(), &st) != 0) return -1;
@@ -255,6 +272,12 @@ bool exportBundle(const std::string& sourcePath, const ExportOptions& opts,
     std::string sha = fileSha256(sourcePath);
     if (sha.empty()) { error = "failed to hash source: " + sourcePath; return false; }
 
+    // 源仓库实际算法：优先 manifest（bundle→bundle 二次 export 场景），否则按 HEAD 推断；
+    // 空仓库退化为当前构建默认。manifest 不可再用 currentHashAlgoName()，否则 sha256
+    // 仓库被 sha1 二进制 export 会写出错误标记。
+    std::string srcAlgo = repoHashAlgoName(*src);
+    if (srcAlgo.empty()) srcAlgo = currentHashAlgoName();
+
     StoreStats stats = computeStoreStats(*src);
 
     auto buildBundleDoc = [&](int64_t reportedSize) -> std::unique_ptr<Document> {
@@ -272,7 +295,7 @@ bool exportBundle(const std::string& sourcePath, const ExportOptions& opts,
         m.commitCount = stats.commits;
         m.bundleSizeBytes = reportedSize;
         m.coVersion = CO_VERSION_STR;
-        m.hashAlgo = currentHashAlgoName();
+        m.hashAlgo = srcAlgo;
         std::string msj = serializeManifest(m);
         std::vector<uint8_t> md(msj.begin(), msj.end());
         b->set(kManifestPath, md);

@@ -62,6 +62,9 @@ StoreStats computeStoreStats(const Document& doc);
 
 // 当前构建的哈希算法名
 std::string currentHashAlgoName();
+// 读取仓库实际哈希算法名：优先 bundle manifest 的 hash_algo，否则按 HEAD 长度推断。
+// 空 HEAD 返回 ""。识别失败（非 sha1/sha256 长度）返回 ""。
+std::string repoHashAlgoName(const Document& doc);
 
 // ============ export（第一章） ============
 
