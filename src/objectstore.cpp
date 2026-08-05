@@ -93,14 +93,14 @@ std::string Store::writeObject(const std::string& objType, const std::vector<uin
     // 去重：相同内容产生相同 hash，已存在则直接返回（第七章）
     if (hasObject(hash)) return hash;
 
-    // 拼接 payload 并 zlib 压缩
+    // 拼接 payload 并 zstd 压缩
     std::string header = objType + " " + std::to_string(content.size()) + '\0';
     std::vector<uint8_t> payload;
     payload.reserve(header.size() + content.size());
     payload.insert(payload.end(), header.begin(), header.end());
     payload.insert(payload.end(), content.begin(), content.end());
 
-    std::vector<uint8_t> compressed = compressZlib(payload);
+    std::vector<uint8_t> compressed = compressZstd(payload);
     doc_.set(objectPath(hash), compressed);
     return hash;
 }
@@ -113,7 +113,7 @@ Store::readObject(const std::string& hash) const {
     std::vector<uint8_t> raw;
     if (doc_.get(objectPath(hash), raw)) {
         try {
-            std::vector<uint8_t> decompressed = decompressZlib(raw);
+            std::vector<uint8_t> decompressed = decompressAuto(raw);
 
             // 找 null 分隔符
             auto it = std::find(decompressed.begin(), decompressed.end(), uint8_t(0));

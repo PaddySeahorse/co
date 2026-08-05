@@ -48,7 +48,7 @@ std::string writeTargetLoose(Document& doc, const std::string& objType,
     payload.reserve(header.size() + content.size());
     payload.insert(payload.end(), header.begin(), header.end());
     payload.insert(payload.end(), content.begin(), content.end());
-    std::vector<uint8_t> compressed = compressZlib(payload);
+    std::vector<uint8_t> compressed = compressZstd(payload);
     doc.set(objectPath(hex), compressed);
     return hex;
 }
