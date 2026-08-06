@@ -47,6 +47,17 @@ std::vector<uint8_t> compressZlib(const std::vector<uint8_t>& data);
 std::vector<uint8_t> decompressZlib(const uint8_t* data, size_t len);
 std::vector<uint8_t> decompressZlib(const std::vector<uint8_t>& data);
 
+// Zstd 压缩/解压（带内置 OOXML 字典）。用于对象存储（loose/pack）压缩，
+// 替代 zlib 以提升结构化 XML 压缩率。ZIP 本身的 raw DEFLATE 仍由 zlib 负责。
+std::vector<uint8_t> compressZstd(const uint8_t* data, size_t len);
+std::vector<uint8_t> compressZstd(const std::vector<uint8_t>& data);
+std::vector<uint8_t> decompressZstd(const uint8_t* data, size_t len);
+std::vector<uint8_t> decompressZstd(const std::vector<uint8_t>& data);
+
+// 自动分流解压：按 frame magic 判定 zstd 抑或 zlib，兼容旧数据。
+std::vector<uint8_t> decompressAuto(const uint8_t* data, size_t len);
+std::vector<uint8_t> decompressAuto(const std::vector<uint8_t>& data);
+
 // Raw DEFLATE 压缩（无 zlib 头，用于 ZIP method=8）
 std::vector<uint8_t> compressDeflateRaw(const uint8_t* data, size_t len);
 std::vector<uint8_t> compressDeflateRaw(const std::vector<uint8_t>& data);

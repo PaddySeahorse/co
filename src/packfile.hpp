@@ -18,6 +18,9 @@ struct PackedObject {
     std::vector<uint8_t> data;
     uint32_t offset = 0;
     uint32_t crc32 = 0;
+    // delta 编码相关的运行时状态（writePack 内部使用，调用方无需填写）
+    uint8_t depth = 0;        // 在 delta 链中的深度，0=全量对象
+    std::string baseHash;     // 非空表示本对象以 REF_DELTA 存储，指向 base
 };
 
 struct PackIndex {

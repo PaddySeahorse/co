@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "packfile.hpp"
+#include "delta.hpp"
 #include "util.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace co {
 
@@ -24,6 +27,13 @@ constexpr uint8_t kIdxMagic[4] = {0xff, 0x74, 0x4f, 0x63};
 constexpr uint8_t kObjCommit = 1;
 constexpr uint8_t kObjTree = 2;
 constexpr uint8_t kObjBlob = 3;
+constexpr uint8_t kObjRefDelta = 7; // REF_DELTA：紧随 kHashLen 字节 base hash
+
+// delta 启发式参数
+constexpr size_t kMaxDeltaChain = 8;    // delta 链最大深度
+constexpr size_t kDeltaWindow = 10;     // 滑动窗口内候选 base 数
+constexpr double kDeltaThreshold = 0.7; // delta 压缩后须小于全量压缩的此比例才采用
+constexpr size_t kMinDeltaSize = 64;    // 小于此值不尝试 delta，开销不值当
 
 // 类型名 -> pack type 编号，未知返回 0
 uint8_t typeToPackType(const std::string& typeName) {
@@ -87,14 +97,39 @@ bool writePackIndex(Document& doc, const PackIndex& index, const std::string& pa
     return true;
 }
 
+// 写入对象记录头（变长 type+size）。返回记录起点位置。
+// 调用方随后追加 baseHash（若 delta）与压缩数据，并据此记录 CRC。
+static size_t writeObjHeader(std::vector<uint8_t>& packBuf, uint8_t packType, uint64_t size) {
+    uint64_t typeAndSize = (static_cast<uint64_t>(packType) << 4) | (size & 0x0F);
+    uint64_t sizeBits = size >> 4;
+    size_t start = packBuf.size();
+    while (sizeBits > 0) {
+        packBuf.push_back(static_cast<uint8_t>(typeAndSize | 0x80));
+        typeAndSize = sizeBits & 0x7F;
+        sizeBits >>= 7;
+    }
+    packBuf.push_back(static_cast<uint8_t>(typeAndSize));
+    return start;
+}
+
+// 按 (类型优先级, size) 排序，使相同文件的相邻版本 blob 在 pack 内相邻，
+// 利于 delta 窗口命中。commit/tree 优先写出，避免依赖后续 blob。
+static int typeRank(const std::string& t) {
+    if (t == "commit") return 0;
+    if (t == "tree") return 1;
+    return 2; // blob
+}
+
 } // namespace
 
 // ============ writePack ============
 
 bool writePack(Document& doc, const std::vector<PackedObject>& objects, const std::string& packName) {
-    // 按 hash 排序
     std::vector<PackedObject> sorted = objects;
     std::sort(sorted.begin(), sorted.end(), [](const PackedObject& a, const PackedObject& b) {
+        int ra = typeRank(a.type), rb = typeRank(b.type);
+        if (ra != rb) return ra < rb;
+        if (a.data.size() != b.data.size()) return a.data.size() < b.data.size();
         return a.hash < b.hash;
     });
 
@@ -110,33 +145,80 @@ bool writePack(Document& doc, const std::vector<PackedObject>& objects, const st
     index.crcs.resize(sorted.size());
     index.offsets.resize(sorted.size());
 
+    // 最近写出的对象，作为同类型 delta 的候选 base。深度限制避免链过长。
+    struct Recent { size_t idx; uint8_t depth; };
+    std::vector<Recent> recent; // 滑动窗口
+
     for (size_t i = 0; i < sorted.size(); ++i) {
-        const PackedObject& obj = sorted[i];
+        PackedObject& obj = sorted[i];
         uint32_t offset = static_cast<uint32_t>(packBuf.size());
         index.hashes[i] = obj.hash;
         index.offsets[i] = offset;
 
-        size_t objStart = packBuf.size();
-
         uint8_t packType = typeToPackType(obj.type);
-        uint64_t size = static_cast<uint64_t>(obj.data.size());
 
-        // 变长编码 type+size：第一个字节高 4 位是 type，低 4 位是 size 最低 4 位
-        uint64_t typeAndSize = (static_cast<uint64_t>(packType) << 4) | (size & 0x0F);
-        uint64_t sizeBits = size >> 4;
-        while (sizeBits > 0) {
-            packBuf.push_back(static_cast<uint8_t>(typeAndSize | 0x80));
-            typeAndSize = sizeBits & 0x7F;
-            sizeBits >>= 7;
+        // 选 delta base：在同类型、窗口内、链深度合格、尺寸相近的候选里挑产生最小 delta 的。
+        bool useDelta = false;
+        std::vector<uint8_t> bestDelta;
+        std::vector<uint8_t> bestDeltaCompressed;
+        std::string bestBaseHash;
+        int bestBaseDepth = 0;
+        size_t bestDeltaCompressedSize = SIZE_MAX;
+
+        if (packType != 0 && obj.data.size() >= kMinDeltaSize) {
+            std::vector<uint8_t> fullCompressed = compressZstd(obj.data);
+            size_t fullSize = fullCompressed.size();
+
+            size_t winStart = recent.size() > kDeltaWindow ? recent.size() - kDeltaWindow : 0;
+            for (size_t w = winStart; w < recent.size(); ++w) {
+                size_t j = recent[w].idx;
+                const PackedObject& cand = sorted[j];
+                if (cand.type != obj.type) continue;            // 仅同类型 delta
+                if (recent[w].depth >= kMaxDeltaChain) continue; // base 链已过深
+                // 尺寸差距过大收益低，跳过
+                if (cand.data.size() > obj.data.size() * 3 ||
+                    obj.data.size() > cand.data.size() * 3) continue;
+
+                std::vector<uint8_t> d = createDelta(cand.data, obj.data);
+                std::vector<uint8_t> dcomp = compressZstd(d);
+                // delta 比 REF_DELTA 头开销大（要多 kHashLen 字节 + 压缩差），仅当显著更小才用
+                size_t deltaTotal = dcomp.size() + kHashLen;
+                if (deltaTotal < bestDeltaCompressedSize) {
+                    bestDeltaCompressedSize = deltaTotal;
+                    bestDelta = std::move(d);
+                    bestDeltaCompressed = std::move(dcomp);
+                    bestBaseHash = cand.hash;
+                    bestBaseDepth = recent[w].depth;
+                }
+            }
+
+            if (!bestDelta.empty() &&
+                bestDeltaCompressedSize < fullSize * kDeltaThreshold) {
+                useDelta = true;
+            }
         }
-        packBuf.push_back(static_cast<uint8_t>(typeAndSize));
 
-        // zlib 压缩对象数据
-        std::vector<uint8_t> compressed = compressZlib(obj.data);
-        packBuf.insert(packBuf.end(), compressed.begin(), compressed.end());
+        size_t objStart;
+        if (useDelta) {
+            // REF_DELTA 记录：[type/size 头][base hash 二进制][zstd(delta)]
+            objStart = writeObjHeader(packBuf, kObjRefDelta,
+                                      static_cast<uint64_t>(bestDelta.size()));
+            std::vector<uint8_t> baseBin = hexDecode(bestBaseHash);
+            packBuf.insert(packBuf.end(), baseBin.begin(), baseBin.end());
+            packBuf.insert(packBuf.end(), bestDeltaCompressed.begin(),
+                           bestDeltaCompressed.end());
+            obj.depth = uint8_t(bestBaseDepth + 1);
+            obj.baseHash = bestBaseHash;
+        } else {
+            objStart = writeObjHeader(packBuf, packType,
+                                      static_cast<uint64_t>(obj.data.size()));
+            std::vector<uint8_t> compressed = compressZstd(obj.data);
+            packBuf.insert(packBuf.end(), compressed.begin(), compressed.end());
+            obj.depth = 0;
+        }
 
-        // CRC32 = 对象区（type/size 头 + 压缩数据）的校验
         index.crcs[i] = crc32IEEE(packBuf.data() + objStart, packBuf.size() - objStart);
+        recent.push_back({i, obj.depth});
     }
 
     // kHashLen 字节摘要 trailer
@@ -217,61 +299,100 @@ bool readPackIndex(const Document& doc, const std::string& packName, PackIndex& 
 
 // ============ readPackedObject ============
 
+namespace {
+
+// 解析从 offset 开始的对象记录头，输出 objType（pack 编号）与数据负载起点 pos。
+// 失败返回 false。
+bool parseObjHeader(const std::vector<uint8_t>& data, size_t offset,
+                    uint8_t& objType, size_t& pos) {
+    if (offset >= data.size()) return false;
+    size_t p = offset;
+    uint8_t c = data[p]; ++p;
+    objType = static_cast<uint8_t>((c >> 4) & 0x07);
+    uint64_t size = static_cast<uint64_t>(c & 0x0F);
+    uint32_t shift = 4;
+    while ((c & 0x80) != 0) {
+        if (p >= data.size()) return false;
+        if (shift >= 60) return false;
+        c = data[p]; ++p;
+        size |= static_cast<uint64_t>(c & 0x7F) << shift;
+        shift += 7;
+    }
+    (void)size; // 与历史行为一致：仅推进 pos，不校验 size
+    pos = p;
+    return true;
+}
+
+// 递归解析对象，返回其全量数据与对象类型名。
+// depth 用于防御性递归上限，防构造的环或恶意深链。
+bool resolveObject(const Document& doc, const std::string& packName,
+                   const std::vector<uint8_t>& data, const PackIndex& index,
+                   const std::string& hash, std::string& outType,
+                   std::vector<uint8_t>& outData, size_t depth) {
+    if (depth > 64) return false; // delta 链过深
+
+    // 索引中找 offset
+    size_t idx = SIZE_MAX;
+    for (size_t i = 0; i < index.hashes.size(); ++i) {
+        if (index.hashes[i] == hash) { idx = i; break; }
+    }
+    if (idx == SIZE_MAX) return false;
+    uint32_t offset = index.offsets[idx];
+    if (static_cast<size_t>(offset) >= data.size()) return false;
+
+    uint8_t objType;
+    size_t pos;
+    if (!parseObjHeader(data, offset, objType, pos)) return false;
+
+    if (objType == kObjRefDelta) {
+        // REF_DELTA：紧随 kHashLen 字节 base hash，其后为 zlib(delta)
+        if (pos + kHashLen > data.size()) return false;
+        std::string baseHash = hexEncode(data.data() + pos, kHashLen);
+        pos += kHashLen;
+        if (pos >= data.size()) return false;
+        std::vector<uint8_t> deltaData;
+        try {
+            deltaData = decompressAuto(data.data() + pos, data.size() - pos);
+        } catch (...) {
+            return false;
+        }
+        std::string baseType;
+        std::vector<uint8_t> baseData;
+        if (!resolveObject(doc, packName, data, index, baseHash,
+                           baseType, baseData, depth + 1)) {
+            return false;
+        }
+        if (!applyDelta(baseData, deltaData, outData)) return false;
+        outType = baseType; // delta 对象继承 base 类型
+        return true;
+    }
+
+    // 全量对象
+    std::string typeName = packTypeToName(objType);
+    if (typeName.empty()) return false;
+    if (pos >= data.size()) return false;
+    try {
+        outData = decompressAuto(data.data() + pos, data.size() - pos);
+    } catch (...) {
+        return false;
+    }
+    outType = typeName;
+    return true;
+}
+
+} // namespace
+
 bool readPackedObject(const Document& doc, const std::string& packName,
                       const std::string& hash, std::string& outType,
                       std::vector<uint8_t>& outData) {
     PackIndex index;
     if (!readPackIndex(doc, packName, index)) return false;
 
-    // 在索引中查找 hash
-    bool found = false;
-    size_t idx = 0;
-    for (size_t i = 0; i < index.hashes.size(); ++i) {
-        if (index.hashes[i] == hash) {
-            idx = i;
-            found = true;
-            break;
-        }
-    }
-    if (!found) return false;
-
-    uint32_t offset = index.offsets[idx];
-
     std::string packPath = std::string(kPackDir) + "/" + packName + ".pack";
     std::vector<uint8_t> data;
     if (!doc.get(packPath, data)) return false;
 
-    if (static_cast<size_t>(offset) >= data.size()) return false;
-
-    size_t pos = offset;
-    uint8_t c = data[pos]; ++pos;
-    uint8_t objType = static_cast<uint8_t>((c >> 4) & 0x07);
-    uint64_t size = static_cast<uint64_t>(c & 0x0F);
-    uint32_t shift = 4;
-    while ((c & 0x80) != 0) {
-        if (pos >= data.size()) return false;
-        if (shift >= 60) return false; // 防止位移溢出未定义行为
-        c = data[pos]; ++pos;
-        size |= static_cast<uint64_t>(c & 0x7F) << shift;
-        shift += 7;
-    }
-    (void)size;  // size 已解析但未使用（与 Go 行为一致，用于推进 pos）
-
-    // zlib 解压剩余数据
-    if (pos >= data.size()) return false;
-    std::vector<uint8_t> decompressed;
-    try {
-        decompressed = decompressZlib(data.data() + pos, data.size() - pos);
-    } catch (...) {
-        return false;
-    }
-
-    std::string typeName = packTypeToName(objType);
-    if (typeName.empty()) return false;
-
-    outType = typeName;
-    outData = std::move(decompressed);
-    return true;
+    return resolveObject(doc, packName, data, index, hash, outType, outData, 0);
 }
 
 // ============ listPackFiles ============

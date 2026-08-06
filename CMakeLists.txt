@@ -48,3 +48,9 @@ target_link_libraries(co PRIVATE ZLIB::ZLIB)
 # 若环境无 OpenSSL，可在此处改为内置 SHA1 实现以保持可编译。
 find_package(OpenSSL REQUIRED)
 target_link_libraries(co PRIVATE OpenSSL::Crypto)
+
+# 依赖：zstd（对象存储的 zstd + 内置字典压缩）。Debian 等发行版仅提供 .pc，
+# 故通过 pkg-config 直接引入，避免依赖 shipped cmake config。
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+target_link_libraries(co PRIVATE PkgConfig::ZSTD)

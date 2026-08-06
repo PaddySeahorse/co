@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "util.hpp"
+#include "zstd_dict.hpp"
 
 #include <zlib.h>
+#include <zstd.h>
+#include <zstd_errors.h>
 #include <openssl/evp.h>
 
 #include <stdexcept>
@@ -190,6 +193,120 @@ std::vector<uint8_t> decompressZlib(const uint8_t* data, size_t len) {
 
 std::vector<uint8_t> decompressZlib(const std::vector<uint8_t>& data) {
     return decompressZlib(data.data(), data.size());
+}
+
+// ============ Zstd 压缩/解压（带内置 OOXML 字典） ============
+//
+// 对象存储改用 zstd：相比 zlib 在结构化 XML 上压缩率更高，且字典对小对象
+// （commit/tree、小 blob）增益显著。zstd frame 的 magic（28 B5 2F FD）与 zlib
+// 头（0x78..）可区分，故 decompressAuto 按语言分流以兼容旧的 zlib 数据。
+
+namespace {
+
+// 字典上下文单例（懒构造、线程不安全——co 单线程 CLI 可接受）
+struct ZstdDictCtx {
+    ZSTD_CDict* cdict = nullptr;
+    ZSTD_DDict* ddict = nullptr;
+    ZSTD_CCtx* cctx = nullptr;
+    ZSTD_DCtx* dctx = nullptr;
+    ZstdDictCtx() {
+        cdict = ZSTD_createCDict(kZstdDict, kZstdDictSize, 19);
+        ddict = ZSTD_createDDict(kZstdDict, kZstdDictSize);
+        cctx = ZSTD_createCCtx();
+        dctx = ZSTD_createDCtx();
+        if (!cdict || !ddict || !cctx || !dctx) {
+            throw std::runtime_error("zstd dict context init failed");
+        }
+    }
+    ~ZstdDictCtx() {
+        ZSTD_freeCDict(cdict);
+        ZSTD_freeDDict(ddict);
+        ZSTD_freeCCtx(cctx);
+        ZSTD_freeDCtx(dctx);
+    }
+};
+
+ZstdDictCtx& zstdCtx() {
+    static ZstdDictCtx inst;
+    return inst;
+}
+
+} // namespace
+
+std::vector<uint8_t> compressZstd(const uint8_t* data, size_t len) {
+    ZstdDictCtx& c = zstdCtx();
+    // 字典压缩对小数据最优；对大数据先估压缩界，按需扩容。
+    size_t bound = ZSTD_compressBound(len);
+    std::vector<uint8_t> out(bound);
+    size_t n = ZSTD_compress_usingCDict(c.cctx, out.data(), out.size(),
+                                         data, len, c.cdict);
+    if (ZSTD_isError(n)) {
+        throw std::runtime_error(std::string("compressZstd failed: ") +
+                                 ZSTD_getErrorName(n));
+    }
+    out.resize(n);
+    return out;
+}
+
+std::vector<uint8_t> compressZstd(const std::vector<uint8_t>& data) {
+    return compressZstd(data.data(), data.size());
+}
+
+std::vector<uint8_t> decompressZstd(const uint8_t* data, size_t len) {
+    // 一律采用流式解压：packfile 中多个 zstd frame 顺序拼合，紧随其后可能
+    // 是下一个对象记录或 trailer。单次 ZSTD_decompress_usingDDict 要求 srcSize
+    // 精确等于一个 frame，余下数据会引发失败。ZSTD_decompressStream 在 frame
+    // 末尾自然停止，可正确处理拼接场景。
+    ZstdDictCtx& c = zstdCtx();
+    size_t r = ZSTD_DCtx_refDDict(c.dctx, c.ddict);
+    if (ZSTD_isError(r)) {
+        throw std::runtime_error(std::string("ZSTD_DCtx_refDDict failed: ") +
+                                 ZSTD_getErrorName(r));
+    }
+    std::vector<uint8_t> out;
+    out.resize(1 << 16);
+    ZSTD_inBuffer in{data, len, 0};
+    ZSTD_outBuffer outb{out.data(), out.size(), 0};
+    while (in.pos < in.size) {
+        size_t n = ZSTD_decompressStream(c.dctx, &outb, &in);
+        if (ZSTD_isError(n)) {
+            ZSTD_DCtx_reset(c.dctx, ZSTD_reset_session_only);
+            throw std::runtime_error(std::string("decompressZstd failed: ") +
+                                     ZSTD_getErrorName(n));
+        }
+        // n==0 表示 frame 完成；n>0 表示还期望更多输入（多 frame 拼接）
+        if (n == 0) break;
+        if (outb.pos == outb.size) {
+            size_t old = out.size();
+            out.resize(old * 2);
+            outb.dst = out.data();
+            outb.size = out.size();
+        }
+    }
+    out.resize(outb.pos);
+    ZSTD_DCtx_reset(c.dctx, ZSTD_reset_session_only);
+    return out;
+}
+
+std::vector<uint8_t> decompressZstd(const std::vector<uint8_t>& data) {
+    return decompressZstd(data.data(), data.size());
+}
+
+// ============ 自动分流解压：zstd 抑或 zlib ============
+//
+// 读取对象时无法提前知道是新增（zstd）还是遗留（zlib）数据。按 frame magic 判断：
+//   - zstd frame: 首四字节为 0x28 0xB5 0x2F 0xFD
+//   - 其余：当作 zlib 处理（zlib 头首字节 0x78 子集）
+std::vector<uint8_t> decompressAuto(const uint8_t* data, size_t len) {
+    if (len >= 4 && data[0] == 0x28 && data[1] == 0xB5 &&
+        data[2] == 0x2F && data[3] == 0xFD) {
+        return decompressZstd(data, len);
+    }
+    return decompressZlib(data, len);
+}
+
+std::vector<uint8_t> decompressAuto(const std::vector<uint8_t>& data) {
+    return decompressAuto(data.data(), data.size());
 }
 
 // ============ Raw DEFLATE（无 zlib 头，ZIP method=8 用） ============
