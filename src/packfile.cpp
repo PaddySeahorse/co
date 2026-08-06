@@ -160,9 +160,10 @@ bool writePack(Document& doc, const std::vector<PackedObject>& objects, const st
         // 选 delta base：在同类型、窗口内、链深度合格、尺寸相近的候选里挑产生最小 delta 的。
         bool useDelta = false;
         std::vector<uint8_t> bestDelta;
+        std::vector<uint8_t> bestDeltaCompressed;
         std::string bestBaseHash;
         int bestBaseDepth = 0;
-        size_t bestDeltaCompressed = SIZE_MAX;
+        size_t bestDeltaCompressedSize = SIZE_MAX;
 
         if (packType != 0 && obj.data.size() >= kMinDeltaSize) {
             std::vector<uint8_t> fullCompressed = compressZstd(obj.data);
@@ -182,17 +183,17 @@ bool writePack(Document& doc, const std::vector<PackedObject>& objects, const st
                 std::vector<uint8_t> dcomp = compressZstd(d);
                 // delta 比 REF_DELTA 头开销大（要多 kHashLen 字节 + 压缩差），仅当显著更小才用
                 size_t deltaTotal = dcomp.size() + kHashLen;
-                if (deltaTotal < bestDeltaCompressed) {
-                    bestDeltaCompressed = deltaTotal;
+                if (deltaTotal < bestDeltaCompressedSize) {
+                    bestDeltaCompressedSize = deltaTotal;
                     bestDelta = std::move(d);
+                    bestDeltaCompressed = std::move(dcomp);
                     bestBaseHash = cand.hash;
                     bestBaseDepth = recent[w].depth;
-                    // 备存压缩全量，命中后避免重压
                 }
             }
 
             if (!bestDelta.empty() &&
-                bestDeltaCompressed < fullSize * kDeltaThreshold) {
+                bestDeltaCompressedSize < fullSize * kDeltaThreshold) {
                 useDelta = true;
             }
         }
@@ -204,8 +205,8 @@ bool writePack(Document& doc, const std::vector<PackedObject>& objects, const st
                                       static_cast<uint64_t>(bestDelta.size()));
             std::vector<uint8_t> baseBin = hexDecode(bestBaseHash);
             packBuf.insert(packBuf.end(), baseBin.begin(), baseBin.end());
-            std::vector<uint8_t> dcomp = compressZstd(bestDelta);
-            packBuf.insert(packBuf.end(), dcomp.begin(), dcomp.end());
+            packBuf.insert(packBuf.end(), bestDeltaCompressed.begin(),
+                           bestDeltaCompressed.end());
             obj.depth = uint8_t(bestBaseDepth + 1);
             obj.baseHash = bestBaseHash;
         } else {
