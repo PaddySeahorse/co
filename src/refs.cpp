@@ -165,11 +165,18 @@ std::string advanceHead(Document& doc, const std::string& newHash) {
             return newHash;
         }
     }
-    // 无分支仓库的首次提交：自动创建默认分支并符号指向
+    // 无分支仓库的首次提交：自动创建默认分支并符号指向。
+    // setBranch 与 attachHead 视为一个整体：任一失败即回滚，避免留下孤立分支后落入分离态。
     if (!r.symbolic && !r.hashPresent && listBranches(doc).empty()) {
-        if (setBranch(doc, kDefaultBranch, newHash) && attachHead(doc, kDefaultBranch)) {
+        if (!setBranch(doc, kDefaultBranch, newHash)) {
+            Store store(doc);
+            store.setHead(newHash);
             return newHash;
         }
+        if (attachHead(doc, kDefaultBranch)) {
+            return newHash;
+        }
+        deleteBranch(doc, kDefaultBranch);
     }
     Store store(doc);
     store.setHead(newHash);
