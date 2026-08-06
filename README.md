@@ -22,7 +22,7 @@ co checkout <commit> "./example doc.docx"
 | `commit -m <msg>` | Create a blob/tree/commit for every file in the archive |
 | `log` | Traverse the commit parent chain from `.co/HEAD` |
 | `status` | Report the version-control status of the Office file |
-| `diff <ref-a> <ref-b>` | Compare two commits and list changed files (A/D/M) |
+| `diff <ref-a> <ref-b>` | Compare two commits and show content changes per entry (`--status` for the A/D/M file list) |
 | `gc` | Pack reachable objects and prune unreachable ones |
 | `checkout <commit>` | Restore the Office file to the given commit |
 | `migrate` | Convert the repository's hash algorithm between SHA1 and SHA256 |
