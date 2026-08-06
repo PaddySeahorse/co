@@ -5,6 +5,7 @@
 #include "objectstore.hpp"
 #include "commit.hpp"
 #include "status.hpp"
+#include "lfs.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -313,29 +314,29 @@ void renderCommitDiff(Document& doc, const std::string& refA,
         if (inA && inB && ia->second == ib->second) continue;
 
         if (inA && !inB) {
-            auto oa = store.readObject(ia->second);
-            if (!oa) continue;
+            std::vector<uint8_t> aData;
+            if (!resolveBlobContent(store, ia->second, aData)) continue;
             out += "=== " + p + " ===\n";
-            appendWholeFile(oa->second, false, p, out);
+            appendWholeFile(aData, false, p, out);
         } else if (!inA && inB) {
-            auto ob = store.readObject(ib->second);
-            if (!ob) continue;
+            std::vector<uint8_t> bData;
+            if (!resolveBlobContent(store, ib->second, bData)) continue;
             out += "=== " + p + " ===\n";
-            appendWholeFile(ob->second, true, p, out);
+            appendWholeFile(bData, true, p, out);
         } else {
-            auto oa = store.readObject(ia->second);
-            auto ob = store.readObject(ib->second);
-            if (!oa || !ob) continue;
+            std::vector<uint8_t> aData, bData;
+            if (!resolveBlobContent(store, ia->second, aData)) continue;
+            if (!resolveBlobContent(store, ib->second, bData)) continue;
             out += "=== " + p + " ===\n";
-            const bool oldText = isLikelyText(oa->second);
-            const bool newText = isLikelyText(ob->second);
+            const bool oldText = isLikelyText(aData);
+            const bool newText = isLikelyText(bData);
             if (oldText && newText) {
-                appendTextDiff(oa->second, ob->second, out);
+                appendTextDiff(aData, bData, out);
             } else if (!oldText && !newText) {
                 out += "M @" + p + "\n";
             } else {
-                appendWholeFile(oa->second, false, p, out);
-                appendWholeFile(ob->second, true, p, out);
+                appendWholeFile(aData, false, p, out);
+                appendWholeFile(bData, true, p, out);
             }
         }
     }

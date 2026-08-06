@@ -7,6 +7,7 @@
 #include "commit.hpp"
 #include "refs.hpp"
 #include "util.hpp"
+#include "lfs.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -37,11 +38,13 @@ std::string trimSpace(const std::string& s) {
 
 // 前向声明：递归标记从 hash 可达的所有对象
 bool markReachable(const Store& store, const std::string& hash,
-                   std::set<std::string>& reachable);
+                   std::set<std::string>& reachable,
+                   std::set<std::string>& lfsReachable);
 
 // 标记 commit 对象引用的 tree 和 parent
 bool markReachableCommit(const Store& store, const std::vector<uint8_t>& content,
-                         std::set<std::string>& reachable) {
+                         std::set<std::string>& reachable,
+                         std::set<std::string>& lfsReachable) {
     std::string s(content.begin(), content.end());
     size_t pos = 0;
     while (pos < s.size()) {
@@ -56,10 +59,10 @@ bool markReachableCommit(const Store& store, const std::vector<uint8_t>& content
         }
         if (line.rfind("tree ", 0) == 0) {
             std::string treeHash = trimSpace(line.substr(5));
-            if (!markReachable(store, treeHash, reachable)) return false;
+            if (!markReachable(store, treeHash, reachable, lfsReachable)) return false;
         } else if (line.rfind("parent ", 0) == 0) {
             std::string parentHash = trimSpace(line.substr(7));
-            if (!markReachable(store, parentHash, reachable)) return false;
+            if (!markReachable(store, parentHash, reachable, lfsReachable)) return false;
         }
     }
     return true;
@@ -67,11 +70,12 @@ bool markReachableCommit(const Store& store, const std::vector<uint8_t>& content
 
 // 标记 tree 对象引用的所有 blob
 bool markReachableTree(const Store& store, const std::vector<uint8_t>& content,
-                       std::set<std::string>& reachable) {
+                       std::set<std::string>& reachable,
+                       std::set<std::string>& lfsReachable) {
     try {
         std::vector<TreeEntry> entries = parseTree(content);
         for (const auto& e : entries) {
-            if (!markReachable(store, e.hash, reachable)) return false;
+            if (!markReachable(store, e.hash, reachable, lfsReachable)) return false;
         }
     } catch (...) {
         return false;
@@ -80,7 +84,8 @@ bool markReachableTree(const Store& store, const std::vector<uint8_t>& content,
 }
 
 bool markReachable(const Store& store, const std::string& hash,
-                   std::set<std::string>& reachable) {
+                   std::set<std::string>& reachable,
+                   std::set<std::string>& lfsReachable) {
     if (reachable.count(hash)) return true;
     reachable.insert(hash);
     auto obj = store.readObject(hash);
@@ -88,12 +93,15 @@ bool markReachable(const Store& store, const std::string& hash,
     const std::string& objType = obj->first;
     const std::vector<uint8_t>& content = obj->second;
     if (objType == "commit") {
-        return markReachableCommit(store, content, reachable);
+        return markReachableCommit(store, content, reachable, lfsReachable);
     }
     if (objType == "tree") {
-        return markReachableTree(store, content, reachable);
+        return markReachableTree(store, content, reachable, lfsReachable);
     }
     if (objType == "blob") {
+        // 指针 blob 引用的 LFS 对象视为可达
+        LfsPointer p;
+        if (parseLfsPointer(content, p)) lfsReachable.insert(p.oid);
         return true;
     }
     return false;  // 未知类型
@@ -109,6 +117,9 @@ void removeAllObjects(Document& doc) {
         doc.remove(std::string(kPackDir) + "/" + pack + ".pack");
         doc.remove(std::string(kPackDir) + "/" + pack + ".idx");
     }
+    for (const auto& oid : listLfsObjects(doc)) {
+        removeLfsObject(doc, oid);
+    }
 }
 
 } // namespace
@@ -121,16 +132,17 @@ bool garbageCollect(Document& doc, GCStats& stats) {
 
     // 1. 标记从 HEAD 与所有分支引用可达的所有对象
     std::set<std::string> reachable;
+    std::set<std::string> lfsReachable;
     std::string head = headCommitHash(doc);
     if (!head.empty()) {
-        if (!markReachable(store, head, reachable)) {
+        if (!markReachable(store, head, reachable, lfsReachable)) {
             return false;
         }
     }
     for (const auto& branch : listBranches(doc)) {
         std::string bh = getBranchHash(doc, branch);
         if (bh.empty()) continue;
-        if (!markReachable(store, bh, reachable)) {
+        if (!markReachable(store, bh, reachable, lfsReachable)) {
             return false;
         }
     }
@@ -173,6 +185,14 @@ bool garbageCollect(Document& doc, GCStats& stats) {
             doc.remove(std::string(kPackDir) + "/" + pack + ".pack");
             doc.remove(std::string(kPackDir) + "/" + pack + ".idx");
             stats.removedPacks++;
+        }
+    }
+
+    // 6. 清理不可达的 LFS 对象（LFS 对象不进 pack，仅做引用清理）
+    for (const auto& oid : listLfsObjects(doc)) {
+        if (!lfsReachable.count(oid)) {
+            removeLfsObject(doc, oid);
+            stats.removedLfs++;
         }
     }
 
