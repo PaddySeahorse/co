@@ -10,6 +10,7 @@
 #include "merge.hpp"
 #include "migrate.hpp"
 #include "lock.hpp"
+#include "diff_content.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -88,8 +89,9 @@ static void printStatusUsage(FILE* out) {
 }
 
 static void printDiffUsage(FILE* out) {
-    fprintf(out, "Usage: co diff <ref-a> <ref-b> [--help] [--external <bundle>] <path>\n");
-    fprintf(out, "Compare two commits and list changed files (A/D/M).\n");
+    fprintf(out, "Usage: co diff <ref-a> <ref-b> [--help] [--status] [--external <bundle>] <path>\n");
+    fprintf(out, "Show content differences of changed entries between two commits.\n");
+    fprintf(out, "  --status              File-level change list only (A/D/M), no content diff\n");
     fprintf(out, "Refs: HEAD, HEAD~N, full hash, or hash prefix.\n");
     fprintf(out, "Example:\n");
     fprintf(out, "  co diff HEAD~1 HEAD ./report.docx\n");
@@ -262,6 +264,7 @@ struct FlagSpec {
     bool allowRedact = false;        // --redact (bool)
     bool allowVerify = false;        // --verify (bool)
     bool allowForce = false;         // --force (bool)
+    bool allowStatus = false;        // --status (bool, diff 专用)
 };
 
 struct ParsedArgs {
@@ -274,6 +277,7 @@ struct ParsedArgs {
     bool redact = false;
     bool verify = false;
     bool force = false;
+    bool status = false;
     std::vector<std::string> positional;
 };
 
@@ -290,6 +294,7 @@ static bool boolFlag(const std::string& arg, const FlagSpec& spec) {
     if (spec.allowRedact && arg == "--redact") return true;
     if (spec.allowVerify && arg == "--verify") return true;
     if (spec.allowForce && arg == "--force") return true;
+    if (spec.allowStatus && arg == "--status") return true;
     return false;
 }
 
@@ -342,6 +347,7 @@ static ParsedArgs parseArgs(const std::string& command, const FlagSpec& spec,
                 else if (arg == "--redact") pa.redact = true;
                 else if (arg == "--verify") pa.verify = true;
                 else if (arg == "--force") pa.force = true;
+                else if (arg == "--status") pa.status = true;
                 continue;
             }
             fprintf(stderr, "flag provided but not defined: %s\n", arg.c_str());
@@ -621,6 +627,7 @@ static void handleStatus(const std::vector<std::string>& args) {
 static void handleDiff(const std::vector<std::string>& args) {
     FlagSpec spec;
     spec.allowExternal = true;
+    spec.allowStatus = true;
     ParsedArgs pa = parseArgs("diff", spec, args);
     if (pa.showHelp) { printDiffUsage(stdout); return; }
     if (pa.positional.size() < 3) fatal("two refs and Office file path are required.");
@@ -641,14 +648,26 @@ static void handleDiff(const std::vector<std::string>& args) {
         if (!doc) fatal("failed to load bundle: " + pa.external);
         requireHashCompat(*doc);
     }
-    std::vector<DiffEntry> entries = diffCommits(*doc, refA, refB);
-    if (entries.empty()) {
+
+    if (pa.status) {
+        std::vector<DiffEntry> entries = diffCommits(*doc, refA, refB);
+        if (entries.empty()) {
+            printf("No changes between %s and %s\n", refA.c_str(), refB.c_str());
+            return;
+        }
+        for (const auto& e : entries) {
+            printf("%c %s\n", e.status, e.path.c_str());
+        }
+        return;
+    }
+
+    std::string out;
+    renderCommitDiff(*doc, refA, refB, out);
+    if (out.empty()) {
         printf("No changes between %s and %s\n", refA.c_str(), refB.c_str());
         return;
     }
-    for (const auto& e : entries) {
-        printf("%c %s\n", e.status, e.path.c_str());
-    }
+    fwrite(out.data(), 1, out.size(), stdout);
 }
 
 // ============ 新命令：export / import / verify-bundle ============
