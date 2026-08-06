@@ -192,12 +192,8 @@ MigrateResult migrateStore(const std::string& path) {
         if (!setBranch(*doc, branch, newBh)) { r.error = "migration failed (cannot rewrite branch " + branch + ")"; return r; }
     }
 
-    // 恢复 HEAD：符号形式保持符号（分支已重写）；分离形式写 hash
+    // 恢复 HEAD：符号形式保持符号（分支已在循环中重写，仅需重新指向）；分离形式写 hash
     if (hr.symbolic) {
-        if (!hr.branch.empty() && !setBranch(*doc, hr.branch, newHead)) {
-            r.error = "migration failed (cannot rewrite current branch " + hr.branch + ")";
-            return r;
-        }
         if (!attachHead(*doc, hr.branch)) {
             r.error = "migration failed (cannot attach HEAD to branch " + hr.branch + ")";
             return r;
