@@ -13,7 +13,7 @@ namespace co {
 
 // 渲染 ref-a → ref-b 的内容差异，追加到 out。
 // 无变化或 ref 解析失败时 out 保持为空。
-void renderCommitDiff(const Document& doc, const std::string& refA,
+void renderCommitDiff(Document& doc, const std::string& refA,
                       const std::string& refB, std::string& out);
 
 } // namespace co

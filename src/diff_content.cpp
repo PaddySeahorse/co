@@ -285,7 +285,7 @@ void appendWholeFile(const Bytes& data, bool added, const std::string& path, std
 
 // ============ 主入口 ============
 
-void renderCommitDiff(const Document& doc, const std::string& refA,
+void renderCommitDiff(Document& doc, const std::string& refA,
                       const std::string& refB, std::string& out) {
     std::string a = resolveRef(doc, refA);
     std::string b = resolveRef(doc, refB);
@@ -299,7 +299,7 @@ void renderCommitDiff(const Document& doc, const std::string& refA,
     for (const auto& e : readTree(doc, ca->tree)) ta[e.path] = e.hash;
     for (const auto& e : readTree(doc, cb->tree)) tb[e.path] = e.hash;
 
-    Store store(const_cast<Document&>(doc));
+    Store store(doc);
 
     std::set<std::string> paths;
     for (const auto& kv : ta) paths.insert(kv.first);
