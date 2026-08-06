@@ -6,6 +6,7 @@
 #include "bundle.hpp"
 #include "refs.hpp"
 #include "util.hpp"
+#include "lfs.hpp"
 
 #include <algorithm>
 #include <map>
@@ -120,7 +121,14 @@ StatusInfo computeStatus(const Document& historyDoc, const Document& contentDoc,
         if (!name.empty() && name.back() == '/') continue;
         std::vector<uint8_t> data;
         contentDoc.get(name, data);
-        contentMap[name] = store.hashObject("blob", data);
+        if (shouldUseLfs(name)) {
+            // 与 commit 的 clean 一致：对真实内容构造指针文本后计算 blob hash
+            std::string oid = computeLfsOid(data);
+            contentMap[name] = store.hashObject("blob",
+                                                makeLfsPointer(oid, data.size()));
+        } else {
+            contentMap[name] = store.hashObject("blob", data);
+        }
     }
 
     // 新增/修改

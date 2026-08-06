@@ -6,6 +6,7 @@
 #include "index.hpp"
 #include "refs.hpp"
 #include "util.hpp"
+#include "lfs.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -385,7 +386,13 @@ std::string createCommitExternal(Document& historyDoc, const Document& contentDo
         }
         if (!reused) {
             if (data.empty()) contentDoc.get(name, data);
-            blobHash = store.writeBlob(data);  // 内部再次对象级去重（第七章）
+            if (shouldUseLfs(name)) {
+                // LFS：内容原样写入独立对象库（不 zstd），blob 只存指针文本
+                std::string oid = writeLfsObject(historyDoc, data);
+                blobHash = store.writeBlob(makeLfsPointer(oid, data.size()));
+            } else {
+                blobHash = store.writeBlob(data);  // 内部再次对象级去重（第七章）
+            }
         }
         blobMap[name] = blobHash;
 
@@ -513,20 +520,20 @@ bool checkoutCommitExternal(Document& historyDoc, Document& contentDoc,
         CommitIndex newIndex;
         newIndex.valid = true;
         for (const auto& entry : entries) {
-            auto blob = store.readObject(entry.hash);
-            if (!blob) return false;
-            if (blob->first != "blob") return false;
-            contentDoc.set(entry.path, blob->second);
+            std::vector<uint8_t> content;
+            // 指针 blob 自动从 LFS 库还原真实内容
+            if (!resolveBlobContent(store, entry.hash, content)) return false;
+            contentDoc.set(entry.path, content);
             // 写入 CRC/size 供下次 commit 增量命中（免读数据）
             ZipEntry* ze = contentDoc.getEntryMut(entry.path);
             if (ze) {
-                ze->crc = crc32IEEE(blob->second);
-                ze->uncompressedSize = blob->second.size();
+                ze->crc = crc32IEEE(content);
+                ze->uncompressedSize = content.size();
             }
             IndexEntry ne;
             ne.path = entry.path;
-            ne.size = blob->second.size();
-            ne.crc = crc32IEEE(blob->second);
+            ne.size = content.size();
+            ne.crc = crc32IEEE(content);
             ne.blobHash = entry.hash;
             newIndex.entries.push_back(std::move(ne));
         }

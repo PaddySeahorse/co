@@ -556,6 +556,7 @@ static void handleGC(const std::vector<std::string>& args) {
         printf("  Packed objects: %d\n", stats.packedObjects);
         printf("  Removed loose objects: %d\n", stats.removedLoose);
         printf("  Removed old packs: %d\n", stats.removedPacks);
+        printf("  Removed LFS objects: %d\n", stats.removedLfs);
     } else {
         requireExistingFile(pa.external);
         FileLock lock = acquireLockOrDie(pa.external);
@@ -572,6 +573,7 @@ static void handleGC(const std::vector<std::string>& args) {
         printf("  Packed objects: %d\n", stats.packedObjects);
         printf("  Removed loose objects: %d\n", stats.removedLoose);
         printf("  Removed old packs: %d\n", stats.removedPacks);
+        printf("  Removed LFS objects: %d\n", stats.removedLfs);
     }
 }
 

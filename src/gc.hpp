@@ -12,6 +12,7 @@ struct GCStats {
     int packedObjects = 0;
     int removedLoose = 0;
     int removedPacks = 0;
+    int removedLfs = 0;
 };
 
 // 垃圾回收。成功返回 true。
