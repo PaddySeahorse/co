@@ -5,6 +5,7 @@
 #include "bundle.hpp"
 #include "objectstore.hpp"
 #include "commit.hpp"
+#include "refs.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -197,8 +198,8 @@ MergeResult bundleMerge(const std::string& bundleA, const std::string& bundleB,
     if (!docA) { r.error = "failed to load bundle A: " + bundleA; return r; }
     if (!docB) { r.error = "failed to load bundle B: " + bundleB; return r; }
 
-    std::string ha = Store(*docA).head();
-    std::string hb = Store(*docB).head();
+    std::string ha = headCommitHash(*docA);
+    std::string hb = headCommitHash(*docB);
     if (ha.empty()) { r.error = "bundle A has no history"; return r; }
     if (hb.empty()) { r.error = "bundle B has no history"; return r; }
 

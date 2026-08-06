@@ -4,6 +4,7 @@
 #include "commit.hpp"
 #include "objectstore.hpp"
 #include "index.hpp"
+#include "refs.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -402,7 +403,7 @@ std::string createCommitExternal(Document& historyDoc, const Document& contentDo
     std::string treeHash = writeTree(store, treeEntries);
 
     // 3. 作者信息
-    std::string parent = store.head();
+    std::string parent = headCommitHash(historyDoc);
     std::string name = envOrDefault("CO_AUTHOR_NAME", "");
     if (name.empty()) name = authorFromMetadata(contentDoc);
     if (name.empty()) name = "Unknown";
@@ -423,7 +424,7 @@ std::string createCommitExternal(Document& historyDoc, const Document& contentDo
 
     std::vector<uint8_t> commitData(commitContent.begin(), commitContent.end());
     std::string commitHash = store.writeObject("commit", commitData);
-    store.setHead(commitHash);
+    advanceHead(historyDoc, commitHash);
 
     // 5. 写回增量索引
     saveIndex(historyDoc, newIndex);
@@ -458,7 +459,7 @@ std::string createMergeCommit(Document& historyDoc, const std::string& treeHash,
 
     std::vector<uint8_t> commitData(commitContent.begin(), commitContent.end());
     std::string commitHash = store.writeObject("commit", commitData);
-    store.setHead(commitHash);
+    advanceHead(historyDoc, commitHash);
     // merge 后索引失效，删除以走全量
     removeIndex(historyDoc);
     return commitHash;
@@ -472,7 +473,7 @@ std::vector<Commit> logCommits(const Document& doc) {
     Store store(const_cast<Document&>(doc));
 
     std::vector<Commit> commits;
-    std::string current = store.head();
+    std::string current = headCommitHash(doc);
     while (!current.empty()) {
         auto obj = store.readObject(current);
         if (!obj) break;
@@ -530,7 +531,6 @@ bool checkoutCommitExternal(Document& historyDoc, Document& contentDoc,
             newIndex.entries.push_back(std::move(ne));
         }
 
-        store.setHead(commitHash);
         saveIndex(historyDoc, newIndex);
         return true;
     } catch (...) {

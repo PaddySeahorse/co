@@ -7,6 +7,7 @@
 #include "packfile.hpp"
 #include "commit.hpp"
 #include "index.hpp"
+#include "refs.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -166,10 +167,12 @@ MigrateResult migrateStore(const std::string& path) {
     if (!doc) { r.error = "failed to load: " + path; return r; }
 
     Store store(*doc);
-    std::string head = store.head();
+    HeadRef hr = resolveHead(*doc);
+    std::string head = hr.hash;
     if (head.empty()) {
+        // 无历史，无需迁移（可能仍有悬空分支引用，一并清理）
         r.ok = true;
-        return r;  // 无历史，无需迁移
+        return r;
     }
 
     Migrator mig(*doc);
@@ -180,8 +183,28 @@ MigrateResult migrateStore(const std::string& path) {
     r.treesRewritten = mig.trees;
     r.commitsRewritten = mig.commits;
 
-    // 重设 HEAD
-    store.setHead(newHead);
+    // 迁移所有分支引用（含符号 HEAD 指向的分支）
+    for (const auto& branch : listBranches(*doc)) {
+        std::string oldBh = getBranchHash(*doc, branch);
+        if (oldBh.empty()) continue;
+        std::string newBh = mig.migrateCommit(oldBh);
+        if (newBh.empty()) { r.error = "migration failed (cannot rewrite branch " + branch + ")"; return r; }
+        if (!setBranch(*doc, branch, newBh)) { r.error = "migration failed (cannot rewrite branch " + branch + ")"; return r; }
+    }
+
+    // 恢复 HEAD：符号形式保持符号（分支已重写）；分离形式写 hash
+    if (hr.symbolic) {
+        if (!hr.branch.empty() && !setBranch(*doc, hr.branch, newHead)) {
+            r.error = "migration failed (cannot rewrite current branch " + hr.branch + ")";
+            return r;
+        }
+        if (!attachHead(*doc, hr.branch)) {
+            r.error = "migration failed (cannot attach HEAD to branch " + hr.branch + ")";
+            return r;
+        }
+    } else {
+        store.setHead(newHead);
+    }
 
     // 删除旧算法 loose 对象（hex 长度 == 源长度的）与新算法无关的 pack
     for (const auto& h : store.listLooseObjects()) {
