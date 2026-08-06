@@ -23,12 +23,14 @@ constexpr size_t kMaxIndexable = 32 * 1024 * 1024;
 // 单次 copy 的最大长度（Git 限制 0xffffff）。
 constexpr size_t kMaxCopy = 0xFFFFFF;
 
-// 读取 varint（7-bit LE），返回值并通过 len 输出占用字节数
-uint64_t readVarint(const uint8_t* p, size_t& len) {
+// 读取 varint（7-bit LE），返回值并通过 len 输出占用字节数。
+// end 为缓冲区边界，越界时置 len=0 并返回 0。
+uint64_t readVarint(const uint8_t* p, const uint8_t* end, size_t& len) {
     uint64_t v = 0;
     size_t shift = 0;
     len = 0;
     do {
+        if (p >= end) { len = 0; return 0; }
         v |= uint64_t(*p & 0x7F) << shift;
         ++p;
         ++len;
@@ -195,8 +197,10 @@ bool applyDelta(const std::vector<uint8_t>& base,
     const uint8_t* end = p + delta.size();
 
     size_t len;
-    uint64_t baseSize = readVarint(p, len); p += len;
-    uint64_t targetSize = readVarint(p, len); p += len;
+    uint64_t baseSize = readVarint(p, end, len); p += len;
+    if (len == 0) return false;
+    uint64_t targetSize = readVarint(p, end, len); p += len;
+    if (len == 0) return false;
     if (baseSize != base.size()) return false;
     if (targetSize > (uint64_t(1) << 33)) return false; // 上限防溢出
 
