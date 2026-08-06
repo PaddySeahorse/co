@@ -5,6 +5,7 @@
 #include "objectstore.hpp"
 #include "packfile.hpp"
 #include "commit.hpp"
+#include "refs.hpp"
 #include "util.hpp"
 
 #include <openssl/evp.h>
@@ -40,8 +41,7 @@ std::string repoHashAlgoName(const Document& doc) {
         if (parseManifest(s, m) && !m.hashAlgo.empty()) return m.hashAlgo;
     }
     // 兜底：根据 HEAD hex 长度推断（嵌入式仓库无 manifest.json）
-    Store store(const_cast<Document&>(doc));
-    std::string h = store.head();
+    std::string h = headCommitHash(doc);
     if (h.empty()) return "";
     if (h.size() == 2 * 20) return "sha1";
     if (h.size() == 2 * 32) return "sha256";
@@ -233,11 +233,15 @@ void copyContentEntries(const Document& source, Document& dst) {
 bool writeRedactedHistory(const Document& source, Document& dst) {
     Store srcStore(const_cast<Document&>(source));
     Store dstStore(dst);
-    std::string head = srcStore.head();
+    std::string head = headCommitHash(source);
     if (head.empty()) return true;  // 无历史
 
-    // BFS 收集可达对象
+    // BFS 收集可达对象（起点：HEAD + 所有分支引用）
     std::vector<std::string> queue{head};
+    for (const auto& branch : listBranches(source)) {
+        std::string bh = getBranchHash(source, branch);
+        if (!bh.empty()) queue.push_back(bh);
+    }
     std::set<std::string> seen;
     while (!queue.empty()) {
         std::string h = queue.back();
@@ -258,7 +262,17 @@ bool writeRedactedHistory(const Document& source, Document& dst) {
         }
         // blob：跳过（redact）
     }
-    dstStore.setHead(head);
+    // 保留 HEAD 原始内容（符号或分离形式）与分支引用
+    std::vector<uint8_t> headData;
+    if (source.get(kHeadFile, headData)) {
+        dst.set(kHeadFile, headData);
+    } else {
+        dstStore.setHead(head);
+    }
+    for (const auto& branch : listBranches(source)) {
+        std::string bh = getBranchHash(source, branch);
+        if (!bh.empty()) setBranch(dst, branch, bh);
+    }
     return true;
 }
 
@@ -408,7 +422,7 @@ VerifyReport verifyBundle(const std::string& bundlePath) {
     Store store(*bundle);
 
     // HEAD → commit 链
-    std::string head = store.head();
+    std::string head = headCommitHash(*bundle);
     rep.headValid = false;
     if (!head.empty()) {
         auto c = readCommit(*bundle, head);

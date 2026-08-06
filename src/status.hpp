@@ -26,6 +26,7 @@ struct StatusInfo {
     int64_t commitCount = 0;
     int64_t objectCount = 0;
     std::string hashAlgo;
+    std::string branch;         // 当前分支名（分离 HEAD 或未初始化为空）
 };
 
 // historyDoc: 存 .co/ 的 Document；contentDoc: Office 文件内容。

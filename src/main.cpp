@@ -11,6 +11,7 @@
 #include "migrate.hpp"
 #include "lock.hpp"
 #include "diff_content.hpp"
+#include "refs.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -54,6 +55,10 @@ static void printUsage(FILE* out) {
     fprintf(out, "  verify-bundle <bundle>       Verify the integrity of a .co-bundle\n");
     fprintf(out, "  bundle-merge <a> <b>         Three-way merge two .co-bundle files into one\n");
     fprintf(out, "  migrate <path>               Convert the repository's hash algorithm (sha1<->sha256)\n");
+    fprintf(out, "  branch <path>                List branches (with '* ' marking the current one)\n");
+    fprintf(out, "  branch <name> <path>         Create a branch pointing at the current HEAD\n");
+    fprintf(out, "  branch -d <name> <path>      Delete a branch\n");
+    fprintf(out, "  switch <branch> <path>       Switch to a branch (alias for checkout <branch>)\n");
     fprintf(out, "Common flag: --external <bundle>  Use an external .co-bundle as history store\n");
     fprintf(out, "Run 'co <command> --help' for command-specific help.\n");
 }
@@ -160,6 +165,26 @@ static void printMigrateUsage(FILE* out) {
     fprintf(out, "  co migrate ./report.docx\n");
 }
 
+static void printBranchUsage(FILE* out) {
+    fprintf(out, "Usage: co branch [--help] [--external <bundle>] [<name>] <path>\n");
+    fprintf(out, "       co branch -d <name> [--help] [--external <bundle>] <path>\n");
+    fprintf(out, "List, create, or delete branches.\n");
+    fprintf(out, "  (no <name>)      List all branches; '* ' marks the current branch\n");
+    fprintf(out, "  <name>           Create a branch pointing at the current HEAD\n");
+    fprintf(out, "  -d <name>        Delete a branch\n");
+    fprintf(out, "Examples:\n");
+    fprintf(out, "  co branch ./report.docx\n");
+    fprintf(out, "  co branch feature-x ./report.docx\n");
+    fprintf(out, "  co branch -d feature-x ./report.docx\n");
+}
+
+static void printSwitchUsage(FILE* out) {
+    fprintf(out, "Usage: co switch <branch> [--help] [--external <bundle>] <path>\n");
+    fprintf(out, "Switch to a branch (alias for 'co checkout <branch>').\n");
+    fprintf(out, "Example:\n");
+    fprintf(out, "  co switch feature-x ./report.docx\n");
+}
+
 static void commandUsage(const std::string& command, FILE* out) {
     if (command == "init") printInitUsage(out);
     else if (command == "commit") printCommitUsage(out);
@@ -173,6 +198,8 @@ static void commandUsage(const std::string& command, FILE* out) {
     else if (command == "verify-bundle") printVerifyBundleUsage(out);
     else if (command == "bundle-merge") printBundleMergeUsage(out);
     else if (command == "migrate") printMigrateUsage(out);
+    else if (command == "branch") printBranchUsage(out);
+    else if (command == "switch") printSwitchUsage(out);
 }
 
 static void printCommandUsage(const std::string& cmd) {
@@ -188,6 +215,8 @@ static void printCommandUsage(const std::string& cmd) {
     if (cmd == "verify-bundle") { printVerifyBundleUsage(stdout); return; }
     if (cmd == "bundle-merge") { printBundleMergeUsage(stdout); return; }
     if (cmd == "migrate") { printMigrateUsage(stdout); return; }
+    if (cmd == "branch") { printBranchUsage(stdout); return; }
+    if (cmd == "switch") { printSwitchUsage(stdout); return; }
     fprintf(stderr, "Unknown command: %s\n\n", cmd.c_str());
     printUsage(stderr);
     exit(1);
@@ -265,6 +294,7 @@ struct FlagSpec {
     bool allowVerify = false;        // --verify (bool)
     bool allowForce = false;         // --force (bool)
     bool allowStatus = false;        // --status (bool, diff 专用)
+    bool allowDelete = false;        // -d / --delete (bool, branch 专用)
 };
 
 struct ParsedArgs {
@@ -278,6 +308,7 @@ struct ParsedArgs {
     bool verify = false;
     bool force = false;
     bool status = false;
+    bool del = false;
     std::vector<std::string> positional;
 };
 
@@ -295,6 +326,7 @@ static bool boolFlag(const std::string& arg, const FlagSpec& spec) {
     if (spec.allowVerify && arg == "--verify") return true;
     if (spec.allowForce && arg == "--force") return true;
     if (spec.allowStatus && arg == "--status") return true;
+    if (spec.allowDelete && (arg == "-d" || arg == "--delete")) return true;
     return false;
 }
 
@@ -348,6 +380,7 @@ static ParsedArgs parseArgs(const std::string& command, const FlagSpec& spec,
                 else if (arg == "--verify") pa.verify = true;
                 else if (arg == "--force") pa.force = true;
                 else if (arg == "--status") pa.status = true;
+                else if (arg == "-d" || arg == "--delete") pa.del = true;
                 continue;
             }
             fprintf(stderr, "flag provided but not defined: %s\n", arg.c_str());
@@ -553,14 +586,22 @@ static void handleCheckout(const std::vector<std::string>& args) {
     const std::string& path = pa.positional[1];
     requireOfficeFile(path);
 
+    // 分支名优先（与 resolveRef 一致）；非分支则视为分离 checkout
     if (pa.external.empty()) {
         FileLock lock = acquireLockOrDie(path);
         auto doc = Document::load(path);
         if (!doc) fatal("failed to load " + path);
         requireHashCompat(*doc);
+        bool isBranch = isValidBranchName(commitRef) && !getBranchHash(*doc, commitRef).empty();
         std::string commitHash = resolveRef(*doc, commitRef);
         if (commitHash.empty()) fatal("checkout failed: " + commitRef);
         if (!checkoutCommit(*doc, commitHash)) fatal("checkout failed: " + commitHash);
+        if (isBranch) {
+            if (!attachHead(*doc, commitRef)) fatal("checkout failed: cannot attach HEAD to " + commitRef);
+            commitHash = commitRef;
+        } else {
+            detachHead(*doc, commitHash);
+        }
         if (!doc->write(path)) fatal("failed to write " + path);
         printf("Checked out %s\n", commitHash.c_str());
     } else {
@@ -572,10 +613,17 @@ static void handleCheckout(const std::vector<std::string>& args) {
         requireHashCompat(*historyDoc);
         auto contentDoc = Document::load(path);
         if (!contentDoc) fatal("failed to load " + path);
+        bool isBranch = isValidBranchName(commitRef) && !getBranchHash(*historyDoc, commitRef).empty();
         std::string commitHash = resolveRef(*historyDoc, commitRef);
         if (commitHash.empty()) fatal("checkout failed: " + commitRef);
         if (!checkoutCommitExternal(*historyDoc, *contentDoc, commitHash)) {
             fatal("checkout failed: " + commitHash);
+        }
+        if (isBranch) {
+            if (!attachHead(*historyDoc, commitRef)) fatal("checkout failed: cannot attach HEAD to " + commitRef);
+            commitHash = commitRef;
+        } else {
+            detachHead(*historyDoc, commitHash);
         }
         if (!contentDoc->write(path)) fatal("failed to write " + path);
         if (!writeBundleWithManifest(*historyDoc, pa.external)) {
@@ -583,6 +631,94 @@ static void handleCheckout(const std::vector<std::string>& args) {
         }
         printf("Checked out %s (external: %s)\n", commitHash.c_str(), pa.external.c_str());
     }
+}
+
+// ============ 新命令：branch / switch ============
+
+static void handleBranch(const std::vector<std::string>& args) {
+    FlagSpec spec;
+    spec.allowExternal = true;
+    spec.allowDelete = true;
+    ParsedArgs pa = parseArgs("branch", spec, args);
+    if (pa.showHelp) { printBranchUsage(stdout); return; }
+
+    // 定位 path：branch 的 positional 最后一个是 Office 文件路径
+    if (pa.positional.empty()) fatal("Office file path is required.");
+    std::string path = pa.positional.back();
+    requireOfficeFile(path);
+
+    std::unique_ptr<Document> doc;
+    if (pa.external.empty()) {
+        doc = Document::load(path);
+        if (!doc) fatal("failed to load " + path);
+        requireHashCompat(*doc);
+    } else {
+        requireExistingFile(pa.external);
+        doc = Document::load(pa.external);
+        if (!doc) fatal("failed to load bundle: " + pa.external);
+        requireHashCompat(*doc);
+    }
+
+    if (pa.del) {
+        if (pa.positional.size() != 2) fatal("usage: co branch -d <name> <path>");
+        const std::string& name = pa.positional[0];
+        if (!isValidBranchName(name)) fatal("invalid branch name: " + name);
+        if (name == currentBranch(*doc)) fatal("cannot delete the current branch: " + name);
+        if (!deleteBranch(*doc, name)) fatal("branch not found: " + name);
+        if (pa.external.empty()) {
+            if (!doc->write(path)) fatal("failed to write " + path);
+        } else {
+            if (!writeBundleWithManifest(*doc, pa.external)) fatal("failed to write bundle: " + pa.external);
+        }
+        printf("Deleted branch %s\n", name.c_str());
+        return;
+    }
+
+    if (pa.positional.size() == 1) {
+        // 列出分支
+        std::string cur = currentBranch(*doc);
+        std::vector<std::string> branches = listBranches(*doc);
+        if (branches.empty() && cur.empty()) {
+            printf("(no branches)\n");
+            return;
+        }
+        for (const auto& b : branches) {
+            if (b == cur) printf("* %s\n", b.c_str());
+            else printf("  %s\n", b.c_str());
+        }
+        if (cur.empty() && !branches.empty()) {
+            printf("  (detached HEAD)\n");
+        }
+        return;
+    }
+
+    if (pa.positional.size() == 2) {
+        // 创建分支
+        const std::string& name = pa.positional[0];
+        if (!isValidBranchName(name)) fatal("invalid branch name: " + name);
+        if (!getBranchHash(*doc, name).empty()) fatal("branch already exists: " + name);
+        std::string head = headCommitHash(*doc);
+        if (head.empty()) fatal("cannot create branch: repository has no commits");
+        if (!setBranch(*doc, name, head)) fatal("failed to create branch: " + name);
+        if (pa.external.empty()) {
+            if (!doc->write(path)) fatal("failed to write " + path);
+        } else {
+            if (!writeBundleWithManifest(*doc, pa.external)) fatal("failed to write bundle: " + pa.external);
+        }
+        printf("Created branch %s\n", name.c_str());
+        return;
+    }
+
+    fatal("unexpected arguments for branch");
+}
+
+static void handleSwitch(const std::vector<std::string>& args) {
+    FlagSpec spec;
+    spec.allowExternal = true;
+    ParsedArgs pa = parseArgs("switch", spec, args);
+    if (pa.showHelp) { printSwitchUsage(stdout); return; }
+    if (pa.positional.size() != 2) fatal("usage: co switch <branch> <path>");
+    handleCheckout(args);
 }
 
 // ============ 新命令：status / diff ============
@@ -616,6 +752,11 @@ static void handleStatus(const std::vector<std::string>& args) {
     if (!info.hasHistory) {
         printf("No commits yet (file size: %lld bytes)\n", (long long)info.fileSize);
         return;
+    }
+    if (!info.branch.empty()) {
+        printf("On branch: %s\n", info.branch.c_str());
+    } else {
+        printf("Detached HEAD (no current branch)\n");
     }
     printf("Commit: %s (%s)\n", info.headShort.c_str(), info.headMessage.c_str());
     printf("Changes since last commit: %d file(s)\n", info.changedFiles);
@@ -868,6 +1009,8 @@ int main(int argc, char* argv[]) {
     else if (cmd == "verify-bundle") handleVerifyBundle(args);
     else if (cmd == "bundle-merge") handleBundleMerge(args);
     else if (cmd == "migrate") handleMigrate(args);
+    else if (cmd == "branch") handleBranch(args);
+    else if (cmd == "switch") handleSwitch(args);
     else {
         printUsage(stdout);
         return 1;

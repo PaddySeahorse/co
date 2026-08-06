@@ -5,6 +5,7 @@
 #include "objectstore.hpp"
 #include "packfile.hpp"
 #include "commit.hpp"
+#include "refs.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -118,11 +119,18 @@ bool garbageCollect(Document& doc, GCStats& stats) {
     stats = GCStats{};
     Store store(doc);
 
-    // 1. 标记从 HEAD 可达的所有对象
+    // 1. 标记从 HEAD 与所有分支引用可达的所有对象
     std::set<std::string> reachable;
-    std::string head = store.head();
+    std::string head = headCommitHash(doc);
     if (!head.empty()) {
         if (!markReachable(store, head, reachable)) {
+            return false;
+        }
+    }
+    for (const auto& branch : listBranches(doc)) {
+        std::string bh = getBranchHash(doc, branch);
+        if (bh.empty()) continue;
+        if (!markReachable(store, bh, reachable)) {
             return false;
         }
     }

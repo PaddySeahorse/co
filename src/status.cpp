@@ -4,6 +4,7 @@
 #include "status.hpp"
 #include "objectstore.hpp"
 #include "bundle.hpp"
+#include "refs.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -18,7 +19,23 @@ std::string resolveRef(const Document& doc, const std::string& ref) {
     Store store(const_cast<Document&>(doc));
 
     if (ref == "HEAD" || ref.empty()) {
-        return store.head();
+        return headCommitHash(doc);
+    }
+
+    // 显式 refs/heads/<name>
+    const std::string headPrefix = std::string(kRefsHeadsDir) + "/";
+    if (ref.rfind("refs/", 0) == 0) {
+        if (ref.compare(0, headPrefix.size(), headPrefix) == 0) {
+            std::string name = ref.substr(headPrefix.size());
+            if (isValidBranchName(name)) return getBranchHash(doc, name);
+        }
+        return "";
+    }
+
+    // 裸分支名：refs/heads/<name> 存在时优先解析为分支
+    if (isValidBranchName(ref)) {
+        std::string bh = getBranchHash(doc, ref);
+        if (!bh.empty()) return bh;
     }
 
     // HEAD~N
@@ -32,7 +49,7 @@ std::string resolveRef(const Document& doc, const std::string& ref) {
                 n = n * 10 + (rest[i] - '0');
             }
             if (ok && rest.size() > 1) {
-                std::string cur = store.head();
+                std::string cur = headCommitHash(doc);
                 for (int i = 0; i < n && !cur.empty(); ++i) {
                     auto c = readCommit(doc, cur);
                     if (!c) return "";
@@ -47,7 +64,7 @@ std::string resolveRef(const Document& doc, const std::string& ref) {
     if (store.hasObject(ref)) return ref;
 
     // 前缀匹配（在 HEAD 链中找）
-    std::string cur = store.head();
+    std::string cur = headCommitHash(doc);
     while (!cur.empty()) {
         if (cur.rfind(ref, 0) == 0) return cur;
         auto c = readCommit(doc, cur);
@@ -70,7 +87,7 @@ StatusInfo computeStatus(const Document& historyDoc, const Document& contentDoc,
     }
 
     Store store(const_cast<Document&>(historyDoc));
-    std::string head = store.head();
+    std::string head = headCommitHash(historyDoc);
     StoreStats stats = computeStoreStats(historyDoc);
     info.commitCount = stats.commits;
     info.objectCount = stats.objects;
@@ -82,6 +99,7 @@ StatusInfo computeStatus(const Document& historyDoc, const Document& contentDoc,
     info.hasHistory = true;
     info.headHash = head;
     info.headShort = head.substr(0, std::min<size_t>(head.size(), 7));
+    info.branch = currentBranch(historyDoc);
 
     auto c = readCommit(historyDoc, head);
     if (c) {
