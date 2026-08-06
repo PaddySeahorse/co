@@ -200,7 +200,7 @@ bool writePack(Document& doc, const std::vector<PackedObject>& objects, const st
 
         size_t objStart;
         if (useDelta) {
-            // REF_DELTA 记录：[type/size 头][base hash 二进制][zlib(delta)]
+            // REF_DELTA 记录：[type/size 头][base hash 二进制][zstd(delta)]
             objStart = writeObjHeader(packBuf, kObjRefDelta,
                                       static_cast<uint64_t>(bestDelta.size()));
             std::vector<uint8_t> baseBin = hexDecode(bestBaseHash);
