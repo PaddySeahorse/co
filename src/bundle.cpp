@@ -237,8 +237,7 @@ bool writeRedactedHistory(const Document& source, Document& dst) {
     if (head.empty()) return true;  // 无历史
 
     // BFS 收集可达对象（起点：HEAD + 所有分支引用）
-    std::vector<std::string> queue;
-    if (!head.empty()) queue.push_back(head);
+    std::vector<std::string> queue{head};
     for (const auto& branch : listBranches(source)) {
         std::string bh = getBranchHash(source, branch);
         if (!bh.empty()) queue.push_back(bh);
