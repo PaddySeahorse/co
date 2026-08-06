@@ -312,20 +312,21 @@ void renderCommitDiff(Document& doc, const std::string& refA,
         const bool inB = ib != tb.end();
         if (inA && inB && ia->second == ib->second) continue;
 
-        out += "=== " + p + " ===\n";
-
         if (inA && !inB) {
             auto oa = store.readObject(ia->second);
-            if (oa) appendWholeFile(oa->second, false, p, out);
-            else out += "- @" + p + "\n";
+            if (!oa) continue;
+            out += "=== " + p + " ===\n";
+            appendWholeFile(oa->second, false, p, out);
         } else if (!inA && inB) {
             auto ob = store.readObject(ib->second);
-            if (ob) appendWholeFile(ob->second, true, p, out);
-            else out += "+ @" + p + "\n";
+            if (!ob) continue;
+            out += "=== " + p + " ===\n";
+            appendWholeFile(ob->second, true, p, out);
         } else {
             auto oa = store.readObject(ia->second);
             auto ob = store.readObject(ib->second);
             if (!oa || !ob) continue;
+            out += "=== " + p + " ===\n";
             const bool oldText = isLikelyText(oa->second);
             const bool newText = isLikelyText(ob->second);
             if (oldText && newText) {
