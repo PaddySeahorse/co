@@ -5,6 +5,7 @@
 #include "util.hpp"
 
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <set>
@@ -85,8 +86,9 @@ bool parseLfsPointer(const std::vector<uint8_t>& blobData, LfsPointer& out) {
             std::string sz = line.substr(sizePrefix.size());
             if (sz.empty()) return false;
             char* end = nullptr;
+            errno = 0;
             unsigned long long v = std::strtoull(sz.c_str(), &end, 10);
-            if (end == sz.c_str() || *end != '\0') return false;
+            if (end == sz.c_str() || *end != '\0' || errno == ERANGE) return false;
             size = static_cast<uint64_t>(v);
         }
         if (nl == std::string::npos) break;
