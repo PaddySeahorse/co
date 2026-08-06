@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: semantic-release
+    runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install semantic-release
+        run: npm install
+
+      - name: Run semantic-release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
+
+  build:
+    name: Build ${{ matrix.os }}
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: darwin
+            runner: macos-latest
+          - os: windows
+            runner: windows-latest
+    env:
+      VERSION: v${{ needs.release.outputs.new_release_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.release.outputs.new_release_version }}
+
+      - name: Install dependencies (ubuntu)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libssl-dev libzstd-dev
+
+      - name: Install dependencies (macos)
+        if: matrix.os == 'darwin'
+        run: |
+          brew install zstd openssl@3
+          echo "HOMEBREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
+
+      - name: Setup vcpkg and dependencies (windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_ROOT\vcpkg.exe" install zlib:x64-windows openssl:x64-windows zstd:x64-windows
+
+      - name: Configure and build (linux)
+        if: matrix.os == 'linux'
+        run: |
+          cmake -B build -DVERSION="$VERSION" -DCO_HASH=sha1
+          cmake --build build --config Release
+
+      - name: Configure and build (macos)
+        if: matrix.os == 'darwin'
+        run: |
+          export PKG_CONFIG_PATH="$HOMEBREW_PREFIX/opt/openssl@3/lib/pkgconfig:$HOMEBREW_PREFIX/opt/zstd/lib/pkgconfig:$PKG_CONFIG_PATH"
+          cmake -B build -DVERSION="$VERSION" -DCO_HASH=sha1
+          cmake --build build --config Release
+
+      - name: Configure and build (windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          cmake -B build -DVERSION="$env:VERSION" -DCO_HASH=sha1 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
+          cmake --build build --config Release
+
+      - name: Package (linux)
+        if: matrix.os == 'linux'
+        run: |
+          mkdir -p dist
+          tar -czf "dist/co_${VERSION}_linux_amd64.tar.gz" -C build co
+
+      - name: Package (macos)
+        if: matrix.os == 'darwin'
+        run: |
+          mkdir -p dist
+          tar -czf "dist/co_${VERSION}_darwin_amd64.tar.gz" -C build co
+
+      - name: Package (windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path build\Release\co.exe -DestinationPath "dist\co_${env:VERSION}_windows_amd64.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: co-${{ matrix.os }}
+          path: dist/
+
+  finalize:
+    name: Upload binaries and mark prerelease
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Upload binaries and mark prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="v${{ needs.release.outputs.new_release_version }}"
+          FILES="$(find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \))"
+          gh release upload "$VERSION" $FILES --clobber
+          gh release edit "$VERSION" --prerelease
