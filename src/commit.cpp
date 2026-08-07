@@ -189,7 +189,11 @@ bool isCoEntry(const std::string& name) {
 std::string formatTimestampRFC1123Z(int64_t unixTime) {
     time_t t = static_cast<time_t>(unixTime);
     struct tm tmv;
+#ifdef _WIN32
+    if (gmtime_s(&tmv, &t) != 0) return "";
+#else
     if (gmtime_r(&t, &tmv) == nullptr) return "";
+#endif
 
     // 切换到 C locale 确保英文月份/星期名（对齐 Go time.Format 行为）
     std::string saved = setlocale(LC_TIME, nullptr);

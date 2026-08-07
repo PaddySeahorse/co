@@ -21,19 +21,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install semantic-release
-        run: npm install
-
       - name: Run semantic-release
         id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          semantic_version: 24
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
 
   build:
     name: Build ${{ matrix.os }}
@@ -52,6 +46,7 @@ jobs:
             runner: windows-latest
     env:
       VERSION: v${{ needs.release.outputs.new_release_version }}
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -77,6 +72,9 @@ jobs:
           git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           & "$env:VCPKG_ROOT\vcpkg.exe" install zlib:x64-windows openssl:x64-windows zstd:x64-windows
+          choco install pkgconfiglite -y
+          $env:PKG_CONFIG_PATH = "$env:VCPKG_ROOT\installed\x64-windows\lib\pkgconfig"
+          echo "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Configure and build (linux)
         if: matrix.os == 'linux'
@@ -128,6 +126,9 @@ jobs:
     needs: [release, build]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:

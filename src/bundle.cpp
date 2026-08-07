@@ -147,7 +147,11 @@ int64_t findJsonInt(const std::string& json, const std::string& key, int64_t def
 std::string isoNowUtc() {
     time_t t = time(nullptr);
     struct tm tmv;
+#ifdef _WIN32
+    if (gmtime_s(&tmv, &t) != 0) return "";
+#else
     if (gmtime_r(&t, &tmv) == nullptr) return "";
+#endif
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
                   tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,

@@ -38,7 +38,11 @@ if(CO_HASH_DEFINE)
 endif()
 
 # 警告开关
-target_compile_options(co PRIVATE -Wall -Wextra)
+if(MSVC)
+    target_compile_options(co PRIVATE /W4)
+else()
+    target_compile_options(co PRIVATE -Wall -Wextra)
+endif()
 
 # 依赖：zlib（DEFLATE / CRC32）
 find_package(ZLIB REQUIRED)
