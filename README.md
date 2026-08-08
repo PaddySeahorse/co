@@ -1,6 +1,6 @@
 # co (Office Object Storage MVP)
 
-This repository contains the MVP skeleton of a CLI tool called `co`. It stores Git-style objects (blob/tree/commit) inside a `.co` directory embedded within `.docx`/`.xlsx`/`.pptx` files. All commands require an Office file path to prevent accidental modifications.
+This repository contains the MVP skeleton of a CLI tool called `co`. It stores Git-style objects (blob/tree/commit) inside a `.co` directory embedded within `.docx`/`.xlsx`/`.pptx`/`.odt` files. All commands require an Office file path to prevent accidental modifications.
 
 ## Quickstart
 
@@ -55,6 +55,7 @@ co <command> --help
 - `.docx`
 - `.xlsx`
 - `.pptx`
+- `.odt`
 
 ## Quoting Paths With Spaces
 
@@ -73,7 +74,7 @@ co init My\ File.docx
 
 ## How It Works
 
-- `.docx`/`.xlsx`/`.pptx` files are treated as ZIP archives.
+- `.docx`/`.xlsx`/`.pptx`/`.odt` files are treated as ZIP archives.
 - Loose Git-style objects are written to `.co/objects/xx/yyyy...` using zlib compression.
 - `commit` creates a blob for each file in the archive (excluding `.co`) and builds a flat tree.
 - `log` traverses the commit parent chain starting from `.co/HEAD`.
