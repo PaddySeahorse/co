@@ -246,8 +246,8 @@ static std::string fileBase(const std::string& path) {
 static void requireOfficeFile(const std::string& path) {
     std::string ext = fileExtension(path);
     for (char& c : ext) c = (char)tolower((unsigned char)c);
-    if (ext != ".docx" && ext != ".xlsx" && ext != ".pptx") {
-        fatal("unsupported file extension \"" + ext + "\" (supported: .docx, .xlsx, .pptx)");
+    if (ext != ".docx" && ext != ".xlsx" && ext != ".pptx" && ext != ".odt") {
+        fatal("unsupported file extension \"" + ext + "\" (supported: .docx, .xlsx, .pptx, .odt)");
     }
     struct stat st;
     if (stat(path.c_str(), &st) != 0) {
