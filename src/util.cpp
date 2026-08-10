@@ -112,48 +112,12 @@ std::vector<uint8_t> hexDecode(const std::string& s) {
     return out;
 }
 
-// ============ Zlib 压缩/解压（zlib 格式，带 2 字节头 + Adler32 尾） ============
-
-std::vector<uint8_t> compressZlib(const uint8_t* data, size_t len) {
-    z_stream strm;
-    std::memset(&strm, 0, sizeof(strm));
-    // windowBits=MAX_WBITS(15) 表示 zlib 格式（RFC 1950）
-    if (deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
-                     MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-        throw std::runtime_error("deflateInit2(zlib) failed");
-    }
-    // zlib 的 next_in 是非 const 指针，这里 const_cast 是标准做法
-    strm.next_in = const_cast<Bytef*>(data);
-    strm.avail_in = static_cast<uInt>(len);
-
-    std::vector<uint8_t> out;
-    out.resize(4096);
-    strm.next_out = out.data();
-    strm.avail_out = static_cast<uInt>(out.size());
-
-    int ret;
-    do {
-        ret = deflate(&strm, Z_FINISH);
-        if (strm.avail_out == 0) {
-            // 输出缓冲区满，扩容后继续
-            size_t oldSize = out.size();
-            out.resize(oldSize * 2);
-            strm.next_out = out.data() + oldSize;
-            strm.avail_out = static_cast<uInt>(out.size() - oldSize);
-        }
-    } while (ret == Z_OK);
-
-    deflateEnd(&strm);
-    if (ret != Z_STREAM_END) {
-        throw std::runtime_error("compressZlib: deflate did not finish");
-    }
-    out.resize(strm.total_out);
-    return out;
-}
-
-std::vector<uint8_t> compressZlib(const std::vector<uint8_t>& data) {
-    return compressZlib(data.data(), data.size());
-}
+// ============ Zlib 解压（zlib 格式，带 2 字节头 + Adler32 尾） ============
+//
+// 仅用于兼容旧仓库：对象存储已改用 zstd（见下方 compressZstd），但旧仓库
+// 的 loose 对象仍是 zlib 格式，decompressAuto 对非 zstd magic 的数据走这里。
+// 压缩方向不再提供 compressZlib——zlib 格式（RFC 1950）与 ZIP method=8 的
+// raw DEFLATE（RFC 1951）不兼容，写入会破坏对象（issue #8）。
 
 std::vector<uint8_t> decompressZlib(const uint8_t* data, size_t len) {
     z_stream strm;

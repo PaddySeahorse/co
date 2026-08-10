@@ -362,6 +362,9 @@ std::string createCommitExternal(Document& historyDoc, const Document& contentDo
         if (!name.empty() && name.back() == '/') continue;  // 目录条目
 
         const ZipEntry* entry = contentDoc.getEntry(name);
+        // 条目损坏（raw DEFLATE 解压失败，issue #8 的损坏形态）：
+        // 拒绝提交，避免把空内容当 blob 写入造成静默数据丢失。
+        if (entry && entry->corrupt) return "";
         // 指纹：优先用 ZIP 中央目录已有的 size+CRC（免读数据）
         bool haveStat = entry && (entry->crc != 0 || entry->uncompressedSize != 0);
         uint64_t fpSize = 0;

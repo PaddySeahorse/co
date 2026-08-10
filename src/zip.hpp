@@ -14,6 +14,7 @@ namespace co {
 struct ZipEntry {
     std::string name;
     std::vector<uint8_t> data;  // 解压后的内容（用于 get/set）
+    bool corrupt = false;       // 原始压缩字节无法按 method 解压（保留原字节回写）
 
     // 原始保留元数据（从原 ZIP 读取的条目）
     bool preserveRaw = false;       // true=保留原始压缩字节

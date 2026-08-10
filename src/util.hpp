@@ -39,11 +39,14 @@ std::string hexEncode(const std::array<uint8_t,20>& data);
 std::string hexEncode(const std::array<uint8_t,32>& data);
 std::vector<uint8_t> hexDecode(const std::string& s);
 
-// Zlib 压缩/解压（用 zlib 库，行为对齐 Go compress/zlib）
-// compressZlib: 对应 Go 的 zlib.NewWriter + Write + Close
-std::vector<uint8_t> compressZlib(const uint8_t* data, size_t len);
-std::vector<uint8_t> compressZlib(const std::vector<uint8_t>& data);
-// decompressZlib: 对应 Go 的 zlib.NewReader + io.ReadAll
+// 对象存储压缩契约（issue #8）：
+//   - loose/pack 对象一律用 zstd frame 压缩（decompressAuto 按 magic 识别）；
+//   - ZIP 层对 method=8 条目使用 raw DEFLATE（RFC 1951，无 zlib 头）；
+//   - 禁止把 zlib 格式（RFC 1950，0x78 头 + Adler32 尾）写入 method=8 条目：
+//     ZIP 按 raw DEFLATE 解压会破坏 zlib 头，导致对象不可读。
+// 仅保留解压方向以兼容旧仓库遗留的 zlib 数据；压缩方向已被 zstd 取代，
+// 不再提供 compressZlib，防止重新引入上述格式不匹配。
+// decompressZlib: 对应 Go 的 zlib.NewReader + io.ReadAll（旧数据兼容）
 std::vector<uint8_t> decompressZlib(const uint8_t* data, size_t len);
 std::vector<uint8_t> decompressZlib(const std::vector<uint8_t>& data);
 
