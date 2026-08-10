@@ -477,6 +477,7 @@ static void handleCommit(const std::vector<std::string>& args) {
         if (!doc) fatal("failed to load " + path);
         requireHashCompat(*doc);
         std::string hash = createCommit(*doc, pa.message, nowUnix);
+        if (hash.empty()) fatal("commit failed: an archive entry is corrupt (cannot decompress)");
         if (!doc->write(path)) fatal("failed to write " + path);
         printf("Committed %s\n", hash.c_str());
     } else {
@@ -489,6 +490,7 @@ static void handleCommit(const std::vector<std::string>& args) {
         auto contentDoc = Document::load(path);
         if (!contentDoc) fatal("failed to load " + path);
         std::string hash = createCommitExternal(*historyDoc, *contentDoc, pa.message, nowUnix);
+        if (hash.empty()) fatal("commit failed: an archive entry is corrupt (cannot decompress)");
         if (!writeBundleWithManifest(*historyDoc, pa.external)) {
             fatal("failed to write bundle: " + pa.external);
         }

@@ -272,9 +272,18 @@ std::unique_ptr<Document> Document::load(const std::string& path) {
         // 解压得到未压缩内容
         std::vector<uint8_t> data;
         bool dir = isDirectory(name);
+        bool corrupt = false;
         if (!dir) {
             if (method == 8) {
-                data = decompressDeflateRaw(compData.data(), compData.size(), uncompSize);
+                try {
+                    data = decompressDeflateRaw(compData.data(), compData.size(), uncompSize);
+                } catch (...) {
+                    // 条目无法按 raw DEFLATE 解压（如历史版本写入的 zlib 流被
+                    // method=8 误标，issue #8 的损坏形态）。保留原始字节以便
+                    // 原样回写，标记 corrupt 供上层（commit/readObject）优雅失败，
+                    // 而不是让整个命令崩溃。
+                    corrupt = true;
+                }
             } else if (method == 0) {
                 data = compData;
             }
@@ -305,6 +314,7 @@ std::unique_ptr<Document> Document::load(const std::string& path) {
         ZipEntry e;
         e.name = name;
         e.data = std::move(data);
+        e.corrupt = corrupt;
         e.preserveRaw = true;
         e.method = method;
         e.createVersion = versionMadeBy;
